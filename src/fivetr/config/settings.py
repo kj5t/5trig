@@ -49,7 +49,7 @@ class VCATConfig:
     """Virtual CAT server settings."""
     enabled: bool = True
     host: str = "127.0.0.1"
-    port: int = 4532               # hamlib default rigctld port
+    port: int = 4535               # avoid clashing with rigctld on 4532
 
 
 @dataclass

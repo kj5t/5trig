@@ -65,6 +65,7 @@ class VCATServer:
             self._handle_client,
             self._host,
             self._port,
+            reuse_address=True,
         )
         logger.info("Virtual CAT server listening on %s:%d", self._host, self._port)
 

@@ -191,8 +191,10 @@ class CATRadio:
         self._queue: asyncio.PriorityQueue[tuple[int, CATCommand]] = asyncio.PriorityQueue()
         self._listeners: list[EventListener] = []
         self._running = False
-        self._serial: Any = None   # asyncio serial transport
-        self._seq = 0              # tie-breaker for equal priorities
+        self._transport: Any = None   # asyncio transport (has .write())
+        self._protocol: Any = None    # asyncio protocol (_SerialProtocol)
+        self._serial: Any = None      # alias kept for compat
+        self._seq = 0                 # tie-breaker for equal priorities
 
     # ------------------------------------------------------------------
     # Public API
@@ -208,7 +210,9 @@ class CATRadio:
         """Open the serial port and start the I/O loops."""
         import serial_asyncio
         loop = asyncio.get_running_loop()
-        _, self._serial = await serial_asyncio.create_serial_connection(
+        # create_serial_connection returns (transport, protocol)
+        # The transport has .write(); the protocol receives incoming bytes.
+        self._transport, self._protocol = await serial_asyncio.create_serial_connection(
             loop,
             lambda: _SerialProtocol(self),
             port,
@@ -217,6 +221,7 @@ class CATRadio:
             parity=self.PARITY,
             stopbits=self.STOPBITS,
         )
+        self._serial = self._transport   # legacy alias
         self._running = True
         self.state.connected = True
         await self._emit(RadioEvent.CONNECTED, None)
@@ -225,8 +230,10 @@ class CATRadio:
 
     async def disconnect(self) -> None:
         self._running = False
-        if self._serial:
-            self._serial.close()
+        if self._transport:
+            self._transport.close()
+            self._transport = None
+            self._protocol = None
             self._serial = None
         self.state.connected = False
         await self._emit(RadioEvent.DISCONNECTED, None)
@@ -301,11 +308,11 @@ class CATRadio:
             except TimeoutError:
                 continue
 
-            if not self._serial:
+            if not self._transport:
                 continue
 
             logger.debug("TX: %s", cmd.raw.hex())
-            self._serial.write(cmd.raw)
+            self._transport.write(cmd.raw)
 
             if cmd.reply_len > 0 and cmd.callback:
                 # Give the _SerialProtocol time to accumulate the reply.
@@ -344,19 +351,31 @@ class CATRadio:
 
 
 class _SerialProtocol(asyncio.Protocol):
-    """Minimal asyncio protocol that buffers incoming bytes."""
+    """Minimal asyncio protocol that buffers incoming bytes.
+
+    Yaesu CAT replies are terminated by ';'.  We accumulate data across
+    multiple ``data_received`` calls so that fragmented responses are
+    reassembled before dispatch.
+    """
 
     def __init__(self, radio: CATRadio) -> None:
         self._radio = radio
         self._buf = bytearray()
+        self._transport: Any = None
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:  # type: ignore[override]
+        self._transport = transport
         logger.info("Serial connection established")
 
     def data_received(self, data: bytes) -> None:
         self._buf.extend(data)
-        self._radio._on_data_received(bytes(self._buf))
-        self._buf.clear()
+        # Only dispatch when at least one complete reply (ends with ';') is present
+        if b";" in self._buf:
+            # Pass everything accumulated so far; dispatch splits on ';'
+            self._radio._on_data_received(bytes(self._buf))
+            # Keep any trailing incomplete reply
+            last_semi = self._buf.rfind(b";")
+            self._buf = self._buf[last_semi + 1:]
 
     def connection_lost(self, exc: Exception | None) -> None:
         logger.warning("Serial connection lost: %s", exc)

@@ -324,10 +324,14 @@ class MainWindow(QMainWindow):
                 host=self._config.vcat.host,
                 port=self._config.vcat.port,
             )
-            await self._vcat.start()
-            self._status_vcat.setText(
-                f"vCAT: {self._config.vcat.host}:{self._config.vcat.port}"
-            )
+            try:
+                await self._vcat.start()
+                self._status_vcat.setText(
+                    f"vCAT: {self._config.vcat.host}:{self._config.vcat.port}"
+                )
+            except OSError as e:
+                logger.warning("vCAT server failed to start: %s", e)
+                self._status_vcat.setText(f"vCAT: port {self._config.vcat.port} in use")
 
         # Start audio scope if configured
         if self._config.waterfall.source == "audio":
