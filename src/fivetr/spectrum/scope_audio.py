@@ -60,10 +60,14 @@ class AudioScopeSource:
 
         # Pre-compute Hanning window
         self._window = np.hanning(fft_size).astype(np.float32)
-        # Accumulation buffer
-        self._buf = np.zeros(fft_size * 2, dtype=np.float32)
-        self._buf_pos = 0
-        self._hop = int(fft_size * (1.0 - overlap))
+
+        # hop = how many new samples between successive FFTs
+        # Derived from frame_rate so display updates match the requested FPS.
+        self._hop = max(1, int(sample_rate / frame_rate))
+
+        # Sliding-window accumulator.  We append incoming samples here and
+        # emit an FFT every _hop samples once we have fft_size samples.
+        self._accum = np.zeros(0, dtype=np.float32)
 
     def add_callback(self, cb: ScopeCallback) -> None:
         self._callbacks.append(cb)
@@ -79,7 +83,10 @@ class AudioScopeSource:
             logger.error("sounddevice not installed; audio scope unavailable")
             return
 
-        blocksize = max(self._hop, 256)
+        # blocksize controls latency; 512–2048 is a good range.
+        # Use the smaller of hop and 1024 so callbacks arrive frequently enough.
+        blocksize = min(self._hop, 1024)
+        self._accum = np.zeros(0, dtype=np.float32)  # reset on (re)start
         self._running = True
         self._stream = sd.InputStream(
             device=self.device,
@@ -113,34 +120,40 @@ class AudioScopeSource:
         time_info: object,
         status: object,
     ) -> None:
-        """Called by sounddevice in a background thread."""
+        """Called by sounddevice in a background thread.
+
+        Uses a sliding window accumulator: append incoming samples, then emit
+        one FFT frame for every ``_hop`` new samples once the buffer is full.
+        This avoids the dead-zone bug in a classic ring-buffer approach and
+        correctly honours the requested frame_rate.
+        """
         if not self._running:
             return
 
         # Mix to mono if stereo
         mono = indata[:, 0] if indata.ndim > 1 else indata.flatten()
 
-        # Append to ring buffer
-        n = len(mono)
-        end = self._buf_pos + n
-        if end <= len(self._buf):
-            self._buf[self._buf_pos:end] = mono
-        else:
-            # Wrap around
-            first = len(self._buf) - self._buf_pos
-            self._buf[self._buf_pos:] = mono[:first]
-            self._buf[:end - len(self._buf)] = mono[first:]
-        self._buf_pos = end % len(self._buf)
+        # Grow the accumulator
+        self._accum = np.concatenate((self._accum, mono))
 
-        # Emit FFT frame when we have enough samples
-        if self._buf_pos >= self.fft_size:
-            chunk = self._buf[self._buf_pos - self.fft_size:self._buf_pos]
-            self._emit_fft(chunk)
+        # Emit one FFT per hop worth of new samples
+        while len(self._accum) >= self.fft_size:
+            self._emit_fft(self._accum[:self.fft_size])
+            # Advance by one hop (overlap = keep fft_size - hop samples)
+            self._accum = self._accum[self._hop:]
 
     def _emit_fft(self, samples: np.ndarray) -> None:
         windowed = samples * self._window
         spectrum = np.fft.rfft(windowed)
         magnitude = np.abs(spectrum)
+
+        # Normalise for FFT length and window amplitude so 0 dBFS = 0 dB.
+        # Dividing by sum(window)/2 converts raw bin magnitude → peak amplitude
+        # in the range [0, 1] for a full-scale input signal, making the dB
+        # values comparable to dBFS regardless of fft_size.
+        win_sum = float(np.sum(self._window)) / 2.0   # /2 for one-sided spectrum
+        magnitude = magnitude / (win_sum + 1e-30)
+
         # Convert to dB, floor at -120 dBFS
         with np.errstate(divide="ignore"):
             db = 20.0 * np.log10(magnitude + 1e-12)

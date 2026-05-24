@@ -99,6 +99,7 @@ class MainWindow(QMainWindow):
     _state_changed = Signal(object)          # RadioState
     _spot_received = Signal(object)          # DXSpot
     _connection_changed = Signal(bool)       # connected?
+    _scope_data = Signal(object)             # np.ndarray — crosses audio→main thread
 
     def __init__(self) -> None:
         super().__init__()
@@ -286,6 +287,9 @@ class MainWindow(QMainWindow):
         self._state_changed.connect(self._on_state_changed)
         self._spot_received.connect(self._cluster_panel.add_spot)
         self._connection_changed.connect(self._on_connection_changed)
+        # Audio thread → main thread: QueuedConnection happens automatically
+        # because _waterfall lives on the main thread.
+        self._scope_data.connect(self._waterfall.push_line)
 
     # ------------------------------------------------------------------
     # Radio connection
@@ -387,8 +391,12 @@ class MainWindow(QMainWindow):
         t.start()
 
     def _on_audio_fft(self, db_array) -> None:
-        """Called from audio thread — push to waterfall buffer."""
-        self._waterfall.push_line(db_array)
+        """Called from sounddevice audio thread — must NOT touch Qt directly.
+
+        Emit a signal instead; Qt routes it to the main thread via
+        QueuedConnection before push_line() runs.
+        """
+        self._scope_data.emit(db_array.copy())   # .copy() avoids race on buffer reuse
 
     # ------------------------------------------------------------------
     # Cluster
