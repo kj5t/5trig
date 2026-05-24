@@ -34,6 +34,8 @@ from ..cluster.spot import DXSpot
 from ..config.settings import AppConfig, load_config, save_config
 from ..logging.adif import ADIFLog
 from ..logging.udp_log import UDPDestination, UDPLogger
+from ..remote.client import RemoteRadio
+from ..remote.server import RemoteServer
 from ..spectrum.scope_audio import AudioScopeSource
 from ..vcat.server import VCATServer
 
@@ -107,9 +109,10 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1200, 700)
 
         self._config = load_config()
-        self._radio: CATRadio | None = None
+        self._radio: CATRadio | RemoteRadio | None = None
         self._vcat: VCATServer | None = None
         self._audio_scope: AudioScopeSource | None = None
+        self._remote_server: RemoteServer | None = None
         self._cluster: ClusterClient | None = None
         self._adif_log: ADIFLog | None = None
         self._udp_logger = UDPLogger()
@@ -160,6 +163,24 @@ class MainWindow(QMainWindow):
         )
         self._ptt_btn.toggled.connect(self._on_ptt_toggle)
         tb.addWidget(self._ptt_btn)
+
+        tb.addSeparator()
+
+        tb.addSeparator()
+
+        # Share button — shack side only; starts the remote server
+        self._share_btn = QPushButton("📡 Share")
+        self._share_btn.setCheckable(True)
+        self._share_btn.setEnabled(False)   # enabled once radio is connected
+        self._share_btn.setToolTip(
+            "Share this radio over the network so a remote 5trig client can connect"
+        )
+        self._share_btn.setStyleSheet(
+            "QPushButton:checked { background-color: #005580; color: white; font-weight: bold; }"
+            "QPushButton { padding: 4px 12px; }"
+        )
+        self._share_btn.toggled.connect(self._on_share_toggle)
+        tb.addWidget(self._share_btn)
 
         tb.addSeparator()
 
@@ -239,9 +260,11 @@ class MainWindow(QMainWindow):
         sb: QStatusBar = self.statusBar()
         self._status_radio = QLabel("⚫ Disconnected")
         self._status_vcat = QLabel("vCAT: off")
+        self._status_remote = QLabel("")       # shows share/client status
         self._status_cluster = QLabel("Cluster: off")
         self._status_call = QLabel(f"📻 {self._config.callsign or '(no callsign)'}")
         sb.addWidget(self._status_radio)
+        sb.addPermanentWidget(self._status_remote)
         sb.addPermanentWidget(self._status_vcat)
         sb.addPermanentWidget(self._status_cluster)
         sb.addPermanentWidget(self._status_call)
@@ -302,6 +325,43 @@ class MainWindow(QMainWindow):
             asyncio.ensure_future(self._do_disconnect())
 
     async def _do_connect(self) -> None:
+        rm_cfg = self._config.remote
+
+        # ---- Remote client mode ----
+        if rm_cfg.client_enabled:
+            host = rm_cfg.server_host
+            port = rm_cfg.server_port
+            if not host:
+                QMessageBox.critical(
+                    self, "Remote Connection",
+                    "Remote mode is enabled but no server host is configured.\n"
+                    "Go to Settings → Remote and enter the shack machine's IP address."
+                )
+                self._connect_btn.setChecked(False)
+                return
+
+            self._radio = RemoteRadio(host, port)
+            self._radio.add_listener(self._on_radio_event)
+            try:
+                await self._radio.connect()
+            except Exception as e:
+                logger.error("Remote connect failed: %s", e)
+                QMessageBox.critical(
+                    self, "Remote Connection Error",
+                    f"Could not connect to {host}:{port}:\n{e}\n\n"
+                    "Check that 5trig is running on the shack machine with Share enabled."
+                )
+                self._connect_btn.setChecked(False)
+                return
+
+            self._status_remote.setText(f"🛰 Remote: {host}:{port}")
+            # No local audio scope in remote mode — server streams scope data
+            self._ptt_btn.setEnabled(True)
+            self._ui_timer.start()
+            self._connection_changed.emit(True)
+            return
+
+        # ---- Local radio mode ----
         model_name = self._config.radio.model
         port = self._config.radio.port
         cls = _RADIO_CLASSES.get(model_name, FT710)
@@ -341,16 +401,28 @@ class MainWindow(QMainWindow):
         if self._config.waterfall.source == "audio":
             self._start_audio_scope()
 
+        # Auto-start remote sharing if configured
+        if rm_cfg.share_enabled:
+            self._share_btn.setChecked(True)   # triggers _on_share_toggle
+
         # Auto-connect cluster
         if self._config.cluster.auto_connect and self._config.cluster.callsign:
             asyncio.ensure_future(self._start_cluster())
 
+        self._share_btn.setEnabled(True)
         self._ptt_btn.setEnabled(True)
         self._ui_timer.start()
         self._connection_changed.emit(True)
 
     async def _do_disconnect(self) -> None:
         self._ui_timer.stop()
+
+        # Stop remote server if it was running
+        if self._remote_server:
+            await self._remote_server.stop()
+            self._remote_server = None
+            self._share_btn.setChecked(False)
+            self._status_remote.setText("")
 
         if self._vcat:
             await self._vcat.stop()
@@ -369,9 +441,55 @@ class MainWindow(QMainWindow):
             await self._radio.disconnect()
             self._radio = None
 
+        self._share_btn.setEnabled(False)
         self._ptt_btn.setEnabled(False)
         self._ptt_btn.setChecked(False)
+        self._status_remote.setText("")
         self._connection_changed.emit(False)
+
+    # ------------------------------------------------------------------
+    # Share toggle (shack side — starts / stops RemoteServer)
+    # ------------------------------------------------------------------
+
+    def _on_share_toggle(self, checked: bool) -> None:
+        if checked:
+            asyncio.ensure_future(self._start_remote_server())
+        else:
+            asyncio.ensure_future(self._stop_remote_server())
+
+    async def _start_remote_server(self) -> None:
+        rm_cfg = self._config.remote
+        self._remote_server = RemoteServer(
+            self._radio,
+            host=rm_cfg.share_host,
+            port=rm_cfg.server_port,
+        )
+        # Forward scope data to the remote server so clients get the spectrum
+        if self._audio_scope:
+            self._audio_scope.add_callback(self._remote_server.on_scope_data)
+        try:
+            await self._remote_server.start()
+            port = rm_cfg.server_port
+            import socket
+            local_ip = socket.gethostbyname(socket.gethostname())
+            self._status_remote.setText(f"📡 Sharing: {local_ip}:{port}")
+            logger.info("Remote server started on port %d", port)
+        except OSError as e:
+            logger.error("Remote server failed to start: %s", e)
+            self._status_remote.setText(f"📡 Share failed: port {rm_cfg.server_port} in use")
+            self._remote_server = None
+            self._share_btn.setChecked(False)
+
+    async def _stop_remote_server(self) -> None:
+        if self._remote_server:
+            if self._audio_scope:
+                try:
+                    self._audio_scope.remove_callback(self._remote_server.on_scope_data)
+                except ValueError:
+                    pass
+            await self._remote_server.stop()
+            self._remote_server = None
+        self._status_remote.setText("")
 
     # ------------------------------------------------------------------
     # Audio scope
@@ -418,8 +536,14 @@ class MainWindow(QMainWindow):
     async def _on_radio_event(self, event: RadioEvent, payload) -> None:
         if event == RadioEvent.STATE_CHANGED:
             self._state_changed.emit(payload)
+            # Forward state to any connected remote clients
+            if self._remote_server:
+                await self._remote_server.on_state_changed(payload)
         elif event == RadioEvent.SCOPE_DATA:
-            self._waterfall.push_line(payload)
+            # CAT-based scope (FTdx-10/101) — push to waterfall and remote clients
+            self._scope_data.emit(payload)
+            if self._remote_server:
+                self._remote_server.on_scope_data(payload)
 
     # ------------------------------------------------------------------
     # Qt Slots

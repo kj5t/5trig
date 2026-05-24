@@ -41,6 +41,7 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._build_waterfall_tab(), "Waterfall")
         tabs.addTab(self._build_logging_tab(), "Logging")
         tabs.addTab(self._build_cluster_tab(), "DX Cluster")
+        tabs.addTab(self._build_remote_tab(), "Remote")
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -178,6 +179,62 @@ class SettingsDialog(QDialog):
         form.addRow("QRZ Username:", self._qrz_user)
         return w
 
+    def _build_remote_tab(self) -> QWidget:
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        cfg = self._config.remote
+
+        # ---- Client mode (connect TO a remote shack server) ----
+        client_box = QGroupBox("Client Mode — connect to a remote shack server")
+        client_form = QFormLayout(client_box)
+
+        self._remote_client_enabled = QCheckBox(
+            "Use remote mode (connect to shack server instead of local serial port)"
+        )
+        self._remote_client_enabled.setChecked(cfg.client_enabled)
+
+        self._remote_server_host = QLineEdit(cfg.server_host)
+        self._remote_server_host.setPlaceholderText("e.g. 192.168.1.10 or shack.local")
+
+        self._remote_server_port = QSpinBox()
+        self._remote_server_port.setRange(1024, 65535)
+        self._remote_server_port.setValue(cfg.server_port)
+
+        client_form.addRow(self._remote_client_enabled)
+        client_form.addRow("Shack server IP / host:", self._remote_server_host)
+        client_form.addRow("Port:", self._remote_server_port)
+        client_form.addRow(QLabel(
+            "When enabled, the Radio tab's model / port settings are ignored.\n"
+            "The shack machine must be running 5trig with Share 📡 active."
+        ))
+        layout.addWidget(client_box)
+
+        # ---- Server / Share mode (shack side) ----
+        server_box = QGroupBox("Server Mode — share this radio with remote clients")
+        server_form = QFormLayout(server_box)
+
+        self._remote_share_enabled = QCheckBox(
+            "Auto-start sharing when radio connects (equivalent to clicking Share 📡)"
+        )
+        self._remote_share_enabled.setChecked(cfg.share_enabled)
+
+        self._remote_share_host = QLineEdit(cfg.share_host)
+        self._remote_share_host.setPlaceholderText("0.0.0.0 = all interfaces")
+
+        server_form.addRow(self._remote_share_enabled)
+        server_form.addRow("Bind address:", self._remote_share_host)
+        server_form.addRow(QLabel(
+            "Port (shared with client setting above).\n"
+            "Use 0.0.0.0 to accept connections on all network interfaces.\n"
+            "Restrict to 127.0.0.1 for loopback / SSH tunnel only.\n\n"
+            "CW: remote clients can send PTT/key events; set radio to CW mode.\n"
+            "WinKeyer / Vail adapter: use the cw_key protocol message from the\n"
+            "remote client — see docs for MIDI-to-key integration."
+        ))
+        layout.addWidget(server_box)
+        layout.addStretch()
+        return w
+
     def _build_cluster_tab(self) -> QWidget:
         w = QWidget()
         form = QFormLayout(w)
@@ -237,6 +294,12 @@ class SettingsDialog(QDialog):
         cfg.cluster.port = self._cluster_port.value()
         cfg.cluster.callsign = self._cluster_call.text().strip()
         cfg.cluster.auto_connect = self._cluster_auto.isChecked()
+
+        cfg.remote.client_enabled = self._remote_client_enabled.isChecked()
+        cfg.remote.server_host = self._remote_server_host.text().strip()
+        cfg.remote.server_port = self._remote_server_port.value()
+        cfg.remote.share_enabled = self._remote_share_enabled.isChecked()
+        cfg.remote.share_host = self._remote_share_host.text().strip()
 
         self.accept()
 

@@ -87,6 +87,32 @@ class ClusterConfig:
 
 
 @dataclass
+class RemoteConfig:
+    """Remote operation settings.
+
+    client_enabled:
+        When True, 5trig connects to a remote shack server instead of a
+        local serial port.  The radio model shown in Settings is ignored;
+        the actual model is reported by the server on connect.
+    server_host:
+        IP address or hostname of the shack machine (client mode only).
+    server_port:
+        TCP port for both client connections and the server listener.
+    share_enabled:
+        When True, the shack-side 5trig automatically starts the remote
+        server when the radio connects (equivalent to clicking Share 📡).
+    share_host:
+        Bind address for the server.  ``0.0.0.0`` = all interfaces.
+        Use ``127.0.0.1`` to restrict to loopback only.
+    """
+    client_enabled: bool = False
+    server_host: str = ""
+    server_port: int = 5040
+    share_enabled: bool = False
+    share_host: str = "0.0.0.0"
+
+
+@dataclass
 class AppConfig:
     """Top-level application configuration."""
     callsign: str = ""
@@ -98,6 +124,7 @@ class AppConfig:
     waterfall: WaterfallConfig = field(default_factory=WaterfallConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     cluster: ClusterConfig = field(default_factory=ClusterConfig)
+    remote: RemoteConfig = field(default_factory=RemoteConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +191,16 @@ def _dict_to_config(d: dict) -> AppConfig:
             port=cl.get("port", cfg.cluster.port),
             callsign=cl.get("callsign", cfg.cluster.callsign),
             auto_connect=cl.get("auto_connect", cfg.cluster.auto_connect),
+        )
+
+    if "remote" in d:
+        rm = d["remote"]
+        cfg.remote = RemoteConfig(
+            client_enabled=rm.get("client_enabled", cfg.remote.client_enabled),
+            server_host=rm.get("server_host", cfg.remote.server_host),
+            server_port=rm.get("server_port", cfg.remote.server_port),
+            share_enabled=rm.get("share_enabled", cfg.remote.share_enabled),
+            share_host=rm.get("share_host", cfg.remote.share_host),
         )
 
     return cfg
