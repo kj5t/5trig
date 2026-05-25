@@ -41,12 +41,14 @@ from ..vcat.server import VCATServer
 
 from .cluster_panel import ClusterPanel
 from .freq_display import FreqDisplay
+from .keyer_widget import KeyerWidget
 from .log_panel import LogPanel
 from .meter_widget import MeterWidget
 from .mode_buttons import ModePanel
 from .settings_dialog import SettingsDialog
 from .waterfall_widget import WaterfallWidget
 from ..cat.base import Meters, Mode, VFO
+from ..keyer.keyer import CWKeyer
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +115,7 @@ class MainWindow(QMainWindow):
         self._vcat: VCATServer | None = None
         self._audio_scope: AudioScopeSource | None = None
         self._remote_server: RemoteServer | None = None
+        self._keyer: CWKeyer | None = None
         self._cluster: ClusterClient | None = None
         self._adif_log: ADIFLog | None = None
         self._udp_logger = UDPLogger()
@@ -235,6 +238,12 @@ class MainWindow(QMainWindow):
         self._smeter = MeterWidget(Meters.SMETER)
         v_layout.addWidget(self._smeter)
 
+        # CW Keyer bar
+        self._keyer_widget = KeyerWidget()
+        self._keyer_widget.settings_changed.connect(self._on_keyer_settings_changed)
+        self._keyer_widget.apply_config(self._config.keyer)
+        v_layout.addWidget(self._keyer_widget)
+
         # Waterfall
         self._waterfall = WaterfallWidget(rows=512, cols=1024)
         self._waterfall.freq_clicked.connect(self._tune_to)
@@ -356,6 +365,8 @@ class MainWindow(QMainWindow):
 
             self._status_remote.setText(f"🛰 Remote: {host}:{port}")
             # No local audio scope in remote mode — server streams scope data
+            if self._config.keyer.enabled:
+                await self._start_keyer()
             self._ptt_btn.setEnabled(True)
             self._ui_timer.start()
             self._connection_changed.emit(True)
@@ -405,6 +416,10 @@ class MainWindow(QMainWindow):
         if rm_cfg.share_enabled:
             self._share_btn.setChecked(True)   # triggers _on_share_toggle
 
+        # Start keyer if enabled
+        if self._config.keyer.enabled:
+            await self._start_keyer()
+
         # Auto-connect cluster
         if self._config.cluster.auto_connect and self._config.cluster.callsign:
             asyncio.ensure_future(self._start_cluster())
@@ -416,6 +431,13 @@ class MainWindow(QMainWindow):
 
     async def _do_disconnect(self) -> None:
         self._ui_timer.stop()
+
+        # Stop keyer
+        if self._keyer:
+            await self._keyer.stop()
+            self._keyer = None
+            self._keyer_widget.set_midi_connected(False)
+            self._keyer_widget.set_key_active(False)
 
         # Stop remote server if it was running
         if self._remote_server:
@@ -515,6 +537,64 @@ class MainWindow(QMainWindow):
         QueuedConnection before push_line() runs.
         """
         self._scope_data.emit(db_array.copy())   # .copy() avoids race on buffer reuse
+
+    # ------------------------------------------------------------------
+    # CW Keyer
+    # ------------------------------------------------------------------
+
+    async def _start_keyer(self) -> None:
+        """Create and start the CW keyer using current config + widget state."""
+        # Sync config from widget before starting
+        self._sync_keyer_config()
+        self._keyer = CWKeyer(
+            radio=self._radio,
+            config=self._config.keyer,
+            key_state_callback=self._on_key_state,
+        )
+        await self._keyer.start()
+        self._keyer_widget.set_midi_connected(
+            self._keyer.is_midi_open,
+            self._config.keyer.midi_port,
+        )
+
+    def _sync_keyer_config(self) -> None:
+        """Copy widget state → config (before starting keyer)."""
+        cfg = self._config.keyer
+        cfg.midi_port = self._keyer_widget.midi_port
+        cfg.mode = self._keyer_widget.mode
+        cfg.wpm = self._keyer_widget.wpm
+
+    def _on_key_state(self, down: bool) -> None:
+        """Called from asyncio loop when the key goes down/up.
+
+        Updates the LED in the keyer widget.  The widget lives on the
+        main thread; _on_key_state is called from the asyncio event loop
+        which is also the main thread (qasync bridge), so this is safe.
+        """
+        self._keyer_widget.set_key_active(down)
+
+    def _on_keyer_settings_changed(self) -> None:
+        """User changed MIDI port, mode, or WPM in the keyer widget.
+
+        Live WPM/mode changes are forwarded immediately; MIDI port change
+        requires a keyer restart.
+        """
+        if self._keyer is None:
+            return
+        # Live update WPM and mode — no restart needed
+        self._keyer.update_wpm(self._keyer_widget.wpm)
+        self._keyer.update_mode(self._keyer_widget.mode)
+        # If the MIDI port selection changed, restart the keyer
+        new_port = self._keyer_widget.midi_port
+        if new_port != self._config.keyer.midi_port:
+            asyncio.ensure_future(self._restart_keyer())
+
+    async def _restart_keyer(self) -> None:
+        if self._keyer:
+            await self._keyer.stop()
+            self._keyer = None
+        if self._radio and self._radio.state.connected:
+            await self._start_keyer()
 
     # ------------------------------------------------------------------
     # Cluster

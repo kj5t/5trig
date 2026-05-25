@@ -87,6 +87,17 @@ class ClusterConfig:
 
 
 @dataclass
+class KeyerConfig:
+    """CW keyer settings."""
+    enabled: bool = False
+    midi_port: str = ""        # empty = auto-select first non-passthrough port
+    dit_note: int = 36         # MIDI note for dit paddle  (C2, Vail/WinKeyer default)
+    dah_note: int = 37         # MIDI note for dah paddle  (C#2)
+    mode: str = "iambic_a"     # straight | iambic_a | iambic_b
+    wpm: int = 20              # words per minute
+
+
+@dataclass
 class RemoteConfig:
     """Remote operation settings.
 
@@ -125,6 +136,7 @@ class AppConfig:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     cluster: ClusterConfig = field(default_factory=ClusterConfig)
     remote: RemoteConfig = field(default_factory=RemoteConfig)
+    keyer: KeyerConfig = field(default_factory=KeyerConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +203,17 @@ def _dict_to_config(d: dict) -> AppConfig:
             port=cl.get("port", cfg.cluster.port),
             callsign=cl.get("callsign", cfg.cluster.callsign),
             auto_connect=cl.get("auto_connect", cfg.cluster.auto_connect),
+        )
+
+    if "keyer" in d:
+        ky = d["keyer"]
+        cfg.keyer = KeyerConfig(
+            enabled=ky.get("enabled", cfg.keyer.enabled),
+            midi_port=ky.get("midi_port", cfg.keyer.midi_port),
+            dit_note=ky.get("dit_note", cfg.keyer.dit_note),
+            dah_note=ky.get("dah_note", cfg.keyer.dah_note),
+            mode=ky.get("mode", cfg.keyer.mode),
+            wpm=ky.get("wpm", cfg.keyer.wpm),
         )
 
     if "remote" in d:

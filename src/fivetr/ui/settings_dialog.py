@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..config.settings import AppConfig
+from ..keyer.midi_input import MidiInput
 from ..spectrum.scope_audio import AudioScopeSource
 
 
@@ -41,6 +42,7 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._build_waterfall_tab(), "Waterfall")
         tabs.addTab(self._build_logging_tab(), "Logging")
         tabs.addTab(self._build_cluster_tab(), "DX Cluster")
+        tabs.addTab(self._build_keyer_tab(), "CW Keyer")
         tabs.addTab(self._build_remote_tab(), "Remote")
 
         buttons = QDialogButtonBox(
@@ -179,6 +181,104 @@ class SettingsDialog(QDialog):
         form.addRow("QRZ Username:", self._qrz_user)
         return w
 
+    def _build_keyer_tab(self) -> QWidget:
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        cfg = self._config.keyer
+
+        # ---- Enable ----
+        self._keyer_enabled = QCheckBox(
+            "Enable CW keyer (start automatically when radio connects)"
+        )
+        self._keyer_enabled.setChecked(cfg.enabled)
+        layout.addWidget(self._keyer_enabled)
+
+        # ---- MIDI device ----
+        midi_box = QGroupBox("MIDI Input Device")
+        midi_form = QFormLayout(midi_box)
+
+        self._keyer_midi_port = QComboBox()
+        self._keyer_midi_port.setMinimumWidth(260)
+        self._keyer_midi_port.addItem("(auto — first non-passthrough port)", "")
+        for p in MidiInput.list_ports():
+            self._keyer_midi_port.addItem(p, p)
+        idx = self._keyer_midi_port.findData(cfg.midi_port)
+        if idx >= 0:
+            self._keyer_midi_port.setCurrentIndex(idx)
+
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.setMaximumWidth(70)
+        refresh_btn.clicked.connect(self._refresh_keyer_ports)
+
+        port_row = QWidget()
+        port_rl = QFormLayout(port_row)
+        port_rl.setContentsMargins(0, 0, 0, 0)
+        # Can't easily do horizontal in QFormLayout; use a label+combo inline
+        midi_form.addRow("Port:", self._keyer_midi_port)
+        midi_form.addRow("", refresh_btn)
+
+        self._keyer_dit_note = QSpinBox()
+        self._keyer_dit_note.setRange(0, 127)
+        self._keyer_dit_note.setValue(cfg.dit_note)
+        self._keyer_dit_note.setToolTip("MIDI note number for dit (left) paddle\nVail adapter default: 36 (C2)")
+
+        self._keyer_dah_note = QSpinBox()
+        self._keyer_dah_note.setRange(0, 127)
+        self._keyer_dah_note.setValue(cfg.dah_note)
+        self._keyer_dah_note.setToolTip("MIDI note number for dah (right) paddle\nVail adapter default: 37 (C#2)")
+
+        midi_form.addRow("Dit note (left paddle):", self._keyer_dit_note)
+        midi_form.addRow("Dah note (right paddle):", self._keyer_dah_note)
+        midi_form.addRow(QLabel(
+            "Vail adapter defaults: note 36 (dit) and 37 (dah).\n"
+            "WinKeyer USB in MIDI mode uses the same mapping.\n"
+            "Check your device documentation if paddles are swapped."
+        ))
+        layout.addWidget(midi_box)
+
+        # ---- Keyer mode and speed ----
+        mode_box = QGroupBox("Keyer Mode & Speed")
+        mode_form = QFormLayout(mode_box)
+
+        self._keyer_mode = QComboBox()
+        self._keyer_mode.addItem("Iambic A  (squeeze: finish current element)", "iambic_a")
+        self._keyer_mode.addItem("Iambic B  (squeeze: insert one extra element)", "iambic_b")
+        self._keyer_mode.addItem("Straight key  (paddle = direct PTT)", "straight")
+        idx = self._keyer_mode.findData(cfg.mode)
+        if idx >= 0:
+            self._keyer_mode.setCurrentIndex(idx)
+
+        self._keyer_wpm = QSpinBox()
+        self._keyer_wpm.setRange(5, 60)
+        self._keyer_wpm.setValue(cfg.wpm)
+        self._keyer_wpm.setSuffix(" WPM")
+
+        mode_form.addRow("Mode:", self._keyer_mode)
+        mode_form.addRow("Speed:", self._keyer_wpm)
+        mode_form.addRow(QLabel(
+            "WPM can also be changed live from the keyer bar in the main window."
+        ))
+        layout.addWidget(mode_box)
+
+        layout.addWidget(QLabel(
+            "ℹ️  The keyer bar in the main window also lets you change port,\n"
+            "    mode, and WPM while connected without opening Settings."
+        ))
+        layout.addStretch()
+        return w
+
+    def _refresh_keyer_ports(self) -> None:
+        prev = self._keyer_midi_port.currentData()
+        self._keyer_midi_port.blockSignals(True)
+        self._keyer_midi_port.clear()
+        self._keyer_midi_port.addItem("(auto — first non-passthrough port)", "")
+        for p in MidiInput.list_ports():
+            self._keyer_midi_port.addItem(p, p)
+        idx = self._keyer_midi_port.findData(prev)
+        if idx >= 0:
+            self._keyer_midi_port.setCurrentIndex(idx)
+        self._keyer_midi_port.blockSignals(False)
+
     def _build_remote_tab(self) -> QWidget:
         w = QWidget()
         layout = QVBoxLayout(w)
@@ -300,6 +400,13 @@ class SettingsDialog(QDialog):
         cfg.remote.server_port = self._remote_server_port.value()
         cfg.remote.share_enabled = self._remote_share_enabled.isChecked()
         cfg.remote.share_host = self._remote_share_host.text().strip()
+
+        cfg.keyer.enabled = self._keyer_enabled.isChecked()
+        cfg.keyer.midi_port = self._keyer_midi_port.currentData() or ""
+        cfg.keyer.dit_note = self._keyer_dit_note.value()
+        cfg.keyer.dah_note = self._keyer_dah_note.value()
+        cfg.keyer.mode = self._keyer_mode.currentData()
+        cfg.keyer.wpm = self._keyer_wpm.value()
 
         self.accept()
 
