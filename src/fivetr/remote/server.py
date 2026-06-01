@@ -222,7 +222,8 @@ class RemoteServer:
 
         elif t == "paddle":
             if self._winkeyer and self._winkeyer.is_open:
-                self._winkeyer.paddle(bool(msg.get("dit")), bool(msg.get("dah")))
+                down = bool(msg.get("dit")) or bool(msg.get("dah"))
+                self._winkeyer.key_immediate(down)
 
         elif t == "cat_raw":
             # Arbitrary CAT command string, e.g. "SV" to swap VFOs.
