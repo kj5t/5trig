@@ -46,6 +46,7 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._build_logging_tab(), "Logging")
         tabs.addTab(self._build_cluster_tab(), "DX Cluster")
         tabs.addTab(self._build_keyer_tab(), "CW Keyer")
+        tabs.addTab(self._build_macros_tab(), "CW Macros")
         tabs.addTab(self._build_remote_tab(), "Remote")
 
         buttons = QDialogButtonBox(
@@ -327,6 +328,46 @@ class SettingsDialog(QDialog):
             self._keyer_midi_port.setCurrentIndex(idx)
         self._keyer_midi_port.blockSignals(False)
 
+    def _build_macros_tab(self) -> QWidget:
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        form = QFormLayout()
+        layout.addLayout(form)
+
+        form.addRow(QLabel(
+            "F1–F8 macro buttons appear below the keyer bar.  "
+            "Use {CALL} in text to insert your callsign."
+        ))
+        form.addRow(QLabel(""))
+
+        self._macro_labels: list[QLineEdit] = []
+        self._macro_texts: list[QLineEdit] = []
+        macros = self._config.cw_macros
+
+        for i in range(8):
+            lbl = QLineEdit()
+            lbl.setMaximumWidth(80)
+            lbl.setPlaceholderText(f"F{i + 1}")
+            txt = QLineEdit()
+            txt.setPlaceholderText("CW text…")
+
+            if i < len(macros):
+                lbl.setText(macros[i].label)
+                txt.setText(macros[i].text)
+
+            row_widget = QWidget()
+            row_hl = QHBoxLayout(row_widget)
+            row_hl.setContentsMargins(0, 0, 0, 0)
+            row_hl.addWidget(lbl)
+            row_hl.addWidget(txt, 1)
+
+            form.addRow(f"F{i + 1}:", row_widget)
+            self._macro_labels.append(lbl)
+            self._macro_texts.append(txt)
+
+        layout.addStretch()
+        return w
+
     def _build_remote_tab(self) -> QWidget:
         w = QWidget()
         layout = QVBoxLayout(w)
@@ -457,6 +498,15 @@ class SettingsDialog(QDialog):
         cfg.keyer.wpm = self._keyer_wpm.value()
         wk = self._wk_port.currentText().strip()
         cfg.keyer.winkeyer_port = "" if wk == "(none)" else wk
+
+        from ..config.settings import CWMacro
+        cfg.cw_macros = [
+            CWMacro(
+                label=self._macro_labels[i].text().strip(),
+                text=self._macro_texts[i].text().strip(),
+            )
+            for i in range(8)
+        ]
 
         self.accept()
 

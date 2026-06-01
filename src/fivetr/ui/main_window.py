@@ -44,6 +44,7 @@ from ..vcat.server import VCATServer
 from .cluster_panel import ClusterPanel
 from .freq_display import FreqDisplay
 from .keyer_widget import KeyerWidget
+from .macro_widget import MacroWidget
 from .log_panel import LogPanel
 from .meter_widget import MeterWidget
 from .mode_buttons import ModePanel
@@ -252,6 +253,13 @@ class MainWindow(QMainWindow):
         self._keyer_widget.apply_config(self._config.keyer)
         v_layout.addWidget(self._keyer_widget)
 
+        # CW macro buttons (F1–F8)
+        self._macro_widget = MacroWidget()
+        self._macro_widget.macro_triggered.connect(self._on_macro_triggered)
+        self._macro_widget.stop_triggered.connect(self._on_macro_stop)
+        self._macro_widget.apply_macros(self._config.cw_macros, self._config.callsign)
+        v_layout.addWidget(self._macro_widget)
+
         # Waterfall
         self._waterfall = WaterfallWidget(rows=512, cols=1024)
         self._waterfall.freq_clicked.connect(self._tune_to)
@@ -308,6 +316,20 @@ class MainWindow(QMainWindow):
             lambda: self._connect_btn.setChecked(not self._connect_btn.isChecked())
         )
         radio_menu.addAction(connect_act)
+
+        # CW Macros — F1–F8 shortcuts
+        from PySide6.QtGui import QKeySequence
+        macro_menu = mb.addMenu("&Macros")
+        for i in range(8):
+            act = QAction(f"&F{i + 1} Macro", self)
+            act.setShortcut(QKeySequence(f"F{i + 1}"))
+            act.triggered.connect(lambda _, idx=i: self._on_macro_triggered(idx))
+            macro_menu.addAction(act)
+        macro_menu.addSeparator()
+        stop_act = QAction("&Stop CW", self)
+        stop_act.setShortcut(QKeySequence("Escape"))
+        stop_act.triggered.connect(self._on_macro_stop)
+        macro_menu.addAction(stop_act)
 
         # View
         view_menu = mb.addMenu("&View")
@@ -727,6 +749,31 @@ class MainWindow(QMainWindow):
             self._radio.get_freq(VFO.B)
 
     # ------------------------------------------------------------------
+    # CW Macros
+    # ------------------------------------------------------------------
+
+    def _on_macro_triggered(self, idx: int) -> None:
+        """Send CW macro slot *idx* via WinKeyer."""
+        if not self._winkeyer or not self._winkeyer.is_open:
+            return
+        macros = self._config.cw_macros
+        if idx >= len(macros):
+            return
+        text = macros[idx].text.strip()
+        if not text:
+            return
+        text = text.replace("{CALL}", self._config.callsign or "")
+        self._winkeyer.clear_buffer()
+        self._winkeyer.send_text(text)
+        self._macro_widget.set_active(True)
+
+    def _on_macro_stop(self) -> None:
+        """Abort current WinKeyer transmission."""
+        if self._winkeyer and self._winkeyer.is_open:
+            self._winkeyer.clear_buffer()
+        self._macro_widget.set_active(False)
+
+    # ------------------------------------------------------------------
     # VFO / Mode / PTT
     # ------------------------------------------------------------------
 
@@ -771,6 +818,9 @@ class MainWindow(QMainWindow):
             save_config(self._config)
             self._status_call.setText(
                 f"📻 {self._config.callsign or '(no callsign)'}"
+            )
+            self._macro_widget.apply_macros(
+                self._config.cw_macros, self._config.callsign
             )
 
     # ------------------------------------------------------------------

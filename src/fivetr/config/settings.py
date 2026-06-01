@@ -94,6 +94,26 @@ class ClusterConfig:
 
 
 @dataclass
+class CWMacro:
+    """A single CW memory macro slot."""
+    label: str = ""   # short button label (≤8 chars)
+    text: str = ""    # CW text; {CALL} is substituted with operator callsign
+
+
+def _default_macros() -> list:
+    return [
+        CWMacro("CQ", "CQ CQ DE {CALL} {CALL} K"),
+        CWMacro("Exch", "5NN"),
+        CWMacro("TU", "TU DE {CALL} K"),
+        CWMacro("73", "73 GL DE {CALL} SK"),
+        CWMacro("QRZ?", "QRZ? DE {CALL} K"),
+        CWMacro("", ""),
+        CWMacro("", ""),
+        CWMacro("", ""),
+    ]
+
+
+@dataclass
 class KeyerConfig:
     """CW keyer settings."""
     enabled: bool = False
@@ -148,6 +168,7 @@ class AppConfig:
     cluster: ClusterConfig = field(default_factory=ClusterConfig)
     remote: RemoteConfig = field(default_factory=RemoteConfig)
     keyer: KeyerConfig = field(default_factory=KeyerConfig)
+    cw_macros: list = field(default_factory=_default_macros)
 
 
 # ---------------------------------------------------------------------------
@@ -243,6 +264,15 @@ def _dict_to_config(d: dict) -> AppConfig:
             audio_udp_port=rm.get("audio_udp_port", cfg.remote.audio_udp_port),
             audio_bitrate=rm.get("audio_bitrate", cfg.remote.audio_bitrate),
         )
+
+    if "cw_macros" in d:
+        cfg.cw_macros = [
+            CWMacro(label=m.get("label", ""), text=m.get("text", ""))
+            for m in d["cw_macros"]
+        ]
+        # Pad to 8 slots if the file has fewer
+        while len(cfg.cw_macros) < 8:
+            cfg.cw_macros.append(CWMacro())
 
     return cfg
 
