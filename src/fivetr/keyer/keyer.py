@@ -57,6 +57,7 @@ class CWKeyer:
         self._running = False
         self._dit_held = False
         self._dah_held = False
+        self._loop: asyncio.AbstractEventLoop | None = None
 
         mode = KeyerMode(config.mode)
         self._iambic = IambicKeyer(
@@ -75,6 +76,7 @@ class CWKeyer:
 
     async def start(self) -> None:
         """Start MIDI listener and iambic state machine."""
+        self._loop = asyncio.get_event_loop()
         await self._iambic.start()
         self._midi.start()
         self._running = True
@@ -116,23 +118,35 @@ class CWKeyer:
     # ------------------------------------------------------------------
 
     def _on_midi_note(self, note: int, pressed: bool) -> None:
-        """Dispatch MIDI note events to the iambic paddle inputs."""
+        """Dispatch MIDI note events to the iambic paddle inputs.
+
+        Called from the MIDI/evdev reader thread — must not call asyncio
+        coroutines directly.
+        """
         cfg = self._config
         if note == cfg.dit_note:
-            # Remote + WinKeyer: send raw paddle state, skip local iambic
             if getattr(self._radio, "has_winkeyer", False):
                 self._dit_held = pressed
-                self._radio.paddle(dit=self._dit_held, dah=self._dah_held)
+                self._send_paddle()
                 return
             self._iambic.set_dit(pressed)
         elif note == cfg.dah_note:
             if getattr(self._radio, "has_winkeyer", False):
                 self._dah_held = pressed
-                self._radio.paddle(dit=self._dit_held, dah=self._dah_held)
+                self._send_paddle()
                 return
             self._iambic.set_dah(pressed)
         else:
             logger.debug("MIDI note %d %s — not mapped", note, "ON" if pressed else "OFF")
+
+    def _send_paddle(self) -> None:
+        """Send paddle state to the remote WinKeyer, thread-safe."""
+        if self._loop is None:
+            logger.warning("paddle: no event loop")
+            return
+        dit, dah = self._dit_held, self._dah_held
+        logger.info("paddle → dit=%s dah=%s", dit, dah)
+        self._loop.call_soon_threadsafe(self._radio.paddle, dit, dah)
 
     # ------------------------------------------------------------------
     # Key event callback  (called from asyncio event loop by IambicKeyer)
