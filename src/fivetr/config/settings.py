@@ -252,8 +252,18 @@ def load_config() -> AppConfig:
     return _dict_to_config(raw)
 
 
+def _drop_none(d: dict) -> dict:
+    """Recursively remove None values so tomli_w doesn't choke on them."""
+    out = {}
+    for k, v in d.items():
+        if v is None:
+            continue
+        out[k] = _drop_none(v) if isinstance(v, dict) else v
+    return out
+
+
 def save_config(cfg: AppConfig) -> None:
     path = _config_path()
-    d = asdict(cfg)
+    d = _drop_none(asdict(cfg))
     with path.open("wb") as f:
         tomli_w.dump(d, f)
