@@ -59,6 +59,8 @@ class RemoteRadio:
         self._writer: asyncio.StreamWriter | None = None
         self._running = False
         self._recv_task: asyncio.Task | None = None
+        # Set after the hello handshake if the server offers audio streaming
+        self.audio_udp_port: int | None = None
 
     # ------------------------------------------------------------------
     # Listener bus (same interface as CATRadio)
@@ -95,9 +97,12 @@ class RemoteRadio:
             hello = await asyncio.wait_for(recv_msg(self._reader), timeout=5.0)
             if hello.get("t") == "hello":
                 self.state.model = hello.get("model", "Remote")
+                self.audio_udp_port = hello.get("audio_udp_port")
                 logger.info(
-                    "Connected to remote radio: %s (protocol v%s)",
-                    self.state.model, hello.get("ver", "?"),
+                    "Connected to remote radio: %s (protocol v%s, audio UDP: %s)",
+                    self.state.model,
+                    hello.get("ver", "?"),
+                    self.audio_udp_port or "none",
                 )
         except asyncio.TimeoutError:
             logger.warning("No hello received from server — continuing anyway")

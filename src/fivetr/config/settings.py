@@ -57,6 +57,13 @@ class WaterfallConfig:
     """Waterfall display settings."""
     source: str = "audio"          # audio | cat
     audio_device: str | None = None
+    # When set, audio is captured via `pw-record --target=<pw_node>` instead of
+    # sounddevice.  This avoids the exclusive ALSA lock that sounddevice takes
+    # when opening hw:X,0 directly, which would evict PipeWire and silence the
+    # monitoring path.  Set to the PipeWire node name (e.g. the
+    # alsa_input.usb-... name shown by `pactl list sources short`).
+    # Leave empty to use sounddevice (may break speaker monitoring on Linux).
+    pw_node: str = ""
     sample_rate: int = 48000
     fft_size: int = 4096
     db_min: float = -120.0
@@ -121,6 +128,9 @@ class RemoteConfig:
     server_port: int = 5040
     share_enabled: bool = False
     share_host: str = "0.0.0.0"
+    audio_stream: bool = True       # stream audio over UDP when sharing
+    audio_udp_port: int = 5041      # UDP port for Opus audio (separate from TCP control)
+    audio_bitrate: int = 64_000     # Opus encoder bitrate in bps
 
 
 @dataclass
@@ -176,6 +186,7 @@ def _dict_to_config(d: dict) -> AppConfig:
         cfg.waterfall = WaterfallConfig(
             source=w.get("source", cfg.waterfall.source),
             audio_device=w.get("audio_device", cfg.waterfall.audio_device),
+            pw_node=w.get("pw_node", cfg.waterfall.pw_node),
             sample_rate=w.get("sample_rate", cfg.waterfall.sample_rate),
             fft_size=w.get("fft_size", cfg.waterfall.fft_size),
             db_min=w.get("db_min", cfg.waterfall.db_min),
@@ -224,6 +235,9 @@ def _dict_to_config(d: dict) -> AppConfig:
             server_port=rm.get("server_port", cfg.remote.server_port),
             share_enabled=rm.get("share_enabled", cfg.remote.share_enabled),
             share_host=rm.get("share_host", cfg.remote.share_host),
+            audio_stream=rm.get("audio_stream", cfg.remote.audio_stream),
+            audio_udp_port=rm.get("audio_udp_port", cfg.remote.audio_udp_port),
+            audio_bitrate=rm.get("audio_bitrate", cfg.remote.audio_bitrate),
         )
 
     return cfg

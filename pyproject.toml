@@ -27,6 +27,7 @@ dependencies = [
     "adif-io>=0.0.3",
     "mido>=1.3",
     "python-rtmidi>=1.5",
+    "opuslib>=3.0",
 ]
 
 [project.optional-dependencies]

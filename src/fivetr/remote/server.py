@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from .audio import AudioUDPServer
 from .protocol import PROTOCOL_VERSION, encode_array, recv_msg, send_msg
 
 if TYPE_CHECKING:
@@ -47,6 +48,9 @@ class RemoteServer:
         radio: "CATRadio",
         host: str = "0.0.0.0",
         port: int = 5040,
+        audio_port: int | None = 5041,
+        audio_bitrate: int = 64_000,
+        sample_rate: int = 48000,
     ) -> None:
         self._radio = radio
         self._host = host
@@ -54,6 +58,15 @@ class RemoteServer:
         self._server: asyncio.Server | None = None
         # writers of currently connected clients
         self._clients: set[asyncio.StreamWriter] = set()
+
+        self._audio_server: AudioUDPServer | None = None
+        if audio_port is not None:
+            self._audio_server = AudioUDPServer(
+                host=host,
+                port=audio_port,
+                sample_rate=sample_rate,
+                bitrate=audio_bitrate,
+            )
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -67,12 +80,19 @@ class RemoteServer:
             self._port,
             reuse_address=True,
         )
+        if self._audio_server:
+            self._audio_server.start()
         logger.info(
-            "Remote server listening on %s:%d", self._host, self._port
+            "Remote server listening on %s:%d (audio UDP: %s)",
+            self._host,
+            self._port,
+            self._audio_server.port if self._audio_server else "disabled",
         )
 
     async def stop(self) -> None:
         """Close the server and disconnect all clients."""
+        if self._audio_server:
+            self._audio_server.stop()
         if self._server:
             self._server.close()
             await self._server.wait_closed()
@@ -92,6 +112,11 @@ class RemoteServer:
     # ------------------------------------------------------------------
     # Callbacks wired by the shack-side main window
     # ------------------------------------------------------------------
+
+    def on_pcm(self, samples: np.ndarray) -> None:
+        """Forward raw PCM to the UDP audio server.  Called from audio thread."""
+        if self._audio_server:
+            self._audio_server.on_pcm(samples)
 
     def on_scope_data(self, db_array: np.ndarray) -> None:
         """Called from the AudioScopeSource callback thread.
@@ -128,13 +153,16 @@ class RemoteServer:
         logger.info("Remote client connected: %s", addr)
         self._clients.add(writer)
 
-        # Greet the client with radio model info
+        # Greet the client with radio model info and optional audio UDP port
+        hello: dict = {
+            "t": "hello",
+            "model": self._radio.state.model,
+            "ver": PROTOCOL_VERSION,
+        }
+        if self._audio_server:
+            hello["audio_udp_port"] = self._audio_server.port
         try:
-            await send_msg(writer, {
-                "t": "hello",
-                "model": self._radio.state.model,
-                "ver": PROTOCOL_VERSION,
-            })
+            await send_msg(writer, hello)
             # Send current state immediately so the client shows real data
             await send_msg(writer, {
                 "t": "state",

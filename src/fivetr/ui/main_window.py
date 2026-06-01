@@ -34,6 +34,7 @@ from ..cluster.spot import DXSpot
 from ..config.settings import AppConfig, load_config, save_config
 from ..logging.adif import ADIFLog
 from ..logging.udp_log import UDPDestination, UDPLogger
+from ..remote.audio import AudioUDPClient
 from ..remote.client import RemoteRadio
 from ..remote.server import RemoteServer
 from ..spectrum.scope_audio import AudioScopeSource
@@ -115,6 +116,7 @@ class MainWindow(QMainWindow):
         self._vcat: VCATServer | None = None
         self._audio_scope: AudioScopeSource | None = None
         self._remote_server: RemoteServer | None = None
+        self._audio_udp_client: AudioUDPClient | None = None
         self._keyer: CWKeyer | None = None
         self._cluster: ClusterClient | None = None
         self._adif_log: ADIFLog | None = None
@@ -364,6 +366,14 @@ class MainWindow(QMainWindow):
                 return
 
             self._status_remote.setText(f"🛰 Remote: {host}:{port}")
+            # Start UDP audio client if the server advertised an audio port
+            if self._radio.audio_udp_port is not None:
+                self._audio_udp_client = AudioUDPClient(
+                    server_host=host,
+                    server_udp_port=self._radio.audio_udp_port,
+                    sample_rate=self._config.waterfall.sample_rate,
+                )
+                self._audio_udp_client.start()
             # No local audio scope in remote mode — server streams scope data
             if self._config.keyer.enabled:
                 await self._start_keyer()
@@ -439,6 +449,11 @@ class MainWindow(QMainWindow):
             self._keyer_widget.set_midi_connected(False)
             self._keyer_widget.set_key_active(False)
 
+        # Stop remote audio client if running
+        if self._audio_udp_client:
+            self._audio_udp_client.stop()
+            self._audio_udp_client = None
+
         # Stop remote server if it was running
         if self._remote_server:
             await self._remote_server.stop()
@@ -481,21 +496,30 @@ class MainWindow(QMainWindow):
 
     async def _start_remote_server(self) -> None:
         rm_cfg = self._config.remote
+        audio_port = rm_cfg.audio_udp_port if rm_cfg.audio_stream else None
         self._remote_server = RemoteServer(
             self._radio,
             host=rm_cfg.share_host,
             port=rm_cfg.server_port,
+            audio_port=audio_port,
+            audio_bitrate=rm_cfg.audio_bitrate,
+            sample_rate=self._config.waterfall.sample_rate,
         )
-        # Forward scope data to the remote server so clients get the spectrum
         if self._audio_scope:
+            # Forward FFT frames for the remote waterfall
             self._audio_scope.add_callback(self._remote_server.on_scope_data)
+            # Forward raw PCM for Opus/UDP audio streaming
+            if audio_port is not None:
+                self._audio_scope.add_pcm_callback(self._remote_server.on_pcm)
         try:
             await self._remote_server.start()
-            port = rm_cfg.server_port
             import socket
             local_ip = socket.gethostbyname(socket.gethostname())
-            self._status_remote.setText(f"📡 Sharing: {local_ip}:{port}")
-            logger.info("Remote server started on port %d", port)
+            audio_info = f" + audio UDP:{audio_port}" if audio_port else ""
+            self._status_remote.setText(
+                f"📡 Sharing: {local_ip}:{rm_cfg.server_port}{audio_info}"
+            )
+            logger.info("Remote server started on port %d", rm_cfg.server_port)
         except OSError as e:
             logger.error("Remote server failed to start: %s", e)
             self._status_remote.setText(f"📡 Share failed: port {rm_cfg.server_port} in use")
@@ -509,6 +533,7 @@ class MainWindow(QMainWindow):
                     self._audio_scope.remove_callback(self._remote_server.on_scope_data)
                 except ValueError:
                     pass
+                self._audio_scope.remove_pcm_callback(self._remote_server.on_pcm)
             await self._remote_server.stop()
             self._remote_server = None
         self._status_remote.setText("")
@@ -521,6 +546,7 @@ class MainWindow(QMainWindow):
         wf_cfg = self._config.waterfall
         self._audio_scope = AudioScopeSource(
             device=wf_cfg.audio_device,
+            pw_node=wf_cfg.pw_node,
             sample_rate=wf_cfg.sample_rate,
             fft_size=wf_cfg.fft_size,
         )
