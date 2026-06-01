@@ -31,13 +31,13 @@ _ADMIN = 0x00
 _ADMIN_OPEN = 0x02
 _ADMIN_CLOSE = 0x03
 _ADMIN_ECHO = 0x04
-_ADMIN_PADDLE = 0x07      # WK3: set paddle state from host
 
-# WinKeyer immediate commands
+# WinKeyer immediate commands (single byte prefix, then data)
 _CMD_SPEED = 0x02          # Set WPM (1 byte follows)
-_CMD_KEY_IMMEDIATE = 0x15  # Bit 0: 1 = key down, 0 = key up
 _CMD_CLEAR_BUFFER = 0x0A
-_CMD_PTT_ON_OFF = 0x18     # Bit 0: 1 = PTT on, 0 = PTT off
+_CMD_KEY_IMMEDIATE = 0x0B  # 1 byte follows: bit 0 = key state
+_CMD_SOFTWARE_PADDLE = 0x14  # 1 byte follows: bit 0 = dit, bit 1 = dah
+_CMD_PTT = 0x18            # 1 byte follows: bit 0 = PTT state
 
 
 class WinKeyer:
@@ -122,7 +122,7 @@ class WinKeyer:
         remote paddle operation.
         """
         state = (0x01 if dit else 0x00) | (0x02 if dah else 0x00)
-        self._write(bytes([_ADMIN, _ADMIN_PADDLE, state]))
+        self._write(bytes([_CMD_SOFTWARE_PADDLE, state]))
 
     def set_speed(self, wpm: int) -> None:
         """Set keying speed in WPM (5–99)."""
