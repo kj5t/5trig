@@ -132,6 +132,10 @@ class MainWindow(QMainWindow):
         self._ui_timer.setInterval(100)
         self._ui_timer.timeout.connect(self._on_ui_timer)
 
+        # Auto-connect in remote client mode
+        if self._config.remote.client_enabled:
+            QTimer.singleShot(0, lambda: self._connect_btn.setChecked(True))
+
     # ------------------------------------------------------------------
     # UI construction
     # ------------------------------------------------------------------
@@ -669,9 +673,14 @@ class MainWindow(QMainWindow):
     @Slot(bool)
     def _on_connection_changed(self, connected: bool) -> None:
         if connected:
-            model = self._config.radio.model
-            port = self._config.radio.port
-            self._status_radio.setText(f"🟢 {model} @ {port}")
+            if isinstance(self._radio, RemoteRadio):
+                model = self._radio.state.model
+                host = self._config.remote.server_host
+                self._status_radio.setText(f"🟢 {model} @ {host}")
+            else:
+                model = self._config.radio.model
+                port = self._config.radio.port
+                self._status_radio.setText(f"🟢 {model} @ {port}")
             self._connect_btn.setText("⚡ Disconnect")
         else:
             self._status_radio.setText("⚫ Disconnected")
