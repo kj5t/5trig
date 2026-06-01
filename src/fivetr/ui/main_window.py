@@ -434,6 +434,16 @@ class MainWindow(QMainWindow):
         if rm_cfg.share_enabled:
             self._share_btn.setChecked(True)   # triggers _on_share_toggle
 
+        # Open WinKeyer if a port is configured (independent of Share / keyer enabled)
+        wk_port = self._config.keyer.winkeyer_port
+        if wk_port and not self._winkeyer:
+            try:
+                self._winkeyer = WinKeyer(wk_port, speed=self._config.keyer.wpm)
+                self._winkeyer.open()
+            except Exception as e:
+                logger.error("WinKeyer failed to open on %s: %s", wk_port, e)
+                self._winkeyer = None
+
         # Start keyer if enabled
         if self._config.keyer.enabled:
             await self._start_keyer()
@@ -461,6 +471,11 @@ class MainWindow(QMainWindow):
         if self._audio_udp_client:
             self._audio_udp_client.stop()
             self._audio_udp_client = None
+
+        # Close WinKeyer (opened at connect, independent of Share)
+        if self._winkeyer:
+            self._winkeyer.close()
+            self._winkeyer = None
 
         # Stop remote server if it was running
         if self._remote_server:
@@ -505,14 +520,6 @@ class MainWindow(QMainWindow):
     async def _start_remote_server(self) -> None:
         rm_cfg = self._config.remote
         audio_port = rm_cfg.audio_udp_port if rm_cfg.audio_stream else None
-        # Open WinKeyer if configured
-        if rm_cfg.winkeyer_port and not self._winkeyer:
-            try:
-                self._winkeyer = WinKeyer(rm_cfg.winkeyer_port, speed=self._config.keyer.wpm)
-                self._winkeyer.open()
-            except Exception as e:
-                logger.error("WinKeyer failed to open on %s: %s", rm_cfg.winkeyer_port, e)
-                self._winkeyer = None
         self._remote_server = RemoteServer(
             self._radio,
             host=rm_cfg.share_host,
@@ -553,9 +560,6 @@ class MainWindow(QMainWindow):
                 self._audio_scope.remove_pcm_callback(self._remote_server.on_pcm)
             await self._remote_server.stop()
             self._remote_server = None
-        if self._winkeyer:
-            self._winkeyer.close()
-            self._winkeyer = None
         self._status_remote.setText("")
 
     # ------------------------------------------------------------------
@@ -635,10 +639,14 @@ class MainWindow(QMainWindow):
         Live WPM/mode changes are forwarded immediately; MIDI port change
         requires a keyer restart.
         """
+        wpm = self._keyer_widget.wpm
+        # Propagate WPM to WinKeyer regardless of MIDI keyer state
+        if self._winkeyer:
+            self._winkeyer.set_speed(wpm)
         if self._keyer is None:
             return
         # Live update WPM and mode — no restart needed
-        self._keyer.update_wpm(self._keyer_widget.wpm)
+        self._keyer.update_wpm(wpm)
         self._keyer.update_mode(self._keyer_widget.mode)
         # If the MIDI port selection changed, restart the keyer
         new_port = self._keyer_widget.midi_port

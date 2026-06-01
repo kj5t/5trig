@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import glob
+
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -9,6 +11,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFormLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
@@ -188,10 +191,40 @@ class SettingsDialog(QDialog):
 
         # ---- Enable ----
         self._keyer_enabled = QCheckBox(
-            "Enable CW keyer (start automatically when radio connects)"
+            "Enable MIDI CW keyer (start automatically when radio connects)"
         )
         self._keyer_enabled.setChecked(cfg.enabled)
         layout.addWidget(self._keyer_enabled)
+
+        # ---- WinKeyer USB ----
+        wk_box = QGroupBox("WinKeyer USB")
+        wk_form = QFormLayout(wk_box)
+
+        wk_port_row = QWidget()
+        wk_port_hl = QHBoxLayout(wk_port_row)
+        wk_port_hl.setContentsMargins(0, 0, 0, 0)
+        self._wk_port = QComboBox()
+        self._wk_port.setEditable(True)
+        self._wk_port.setMinimumWidth(200)
+        wk_refresh = QPushButton("Detect")
+        wk_refresh.setMaximumWidth(60)
+        wk_refresh.clicked.connect(self._refresh_wk_ports)
+        wk_port_hl.addWidget(self._wk_port, 1)
+        wk_port_hl.addWidget(wk_refresh)
+        self._refresh_wk_ports()
+        # Select saved port
+        idx = self._wk_port.findText(cfg.winkeyer_port)
+        if idx >= 0:
+            self._wk_port.setCurrentIndex(idx)
+        elif cfg.winkeyer_port:
+            self._wk_port.setCurrentText(cfg.winkeyer_port)
+
+        wk_form.addRow("Serial Port:", wk_port_row)
+        wk_form.addRow(QLabel(
+            "Leave blank to disable WinKeyer.  WinKeyer opens automatically\n"
+            "when the radio connects, independently of the Share button."
+        ))
+        layout.addWidget(wk_box)
 
         # ---- MIDI device ----
         midi_box = QGroupBox("MIDI Input Device")
@@ -266,6 +299,21 @@ class SettingsDialog(QDialog):
         ))
         layout.addStretch()
         return w
+
+    def _refresh_wk_ports(self) -> None:
+        prev = self._wk_port.currentText()
+        self._wk_port.blockSignals(True)
+        self._wk_port.clear()
+        self._wk_port.addItem("(none)", "")
+        for pattern in ["/dev/ttyUSB*", "/dev/ttyACM*"]:
+            for p in sorted(glob.glob(pattern)):
+                self._wk_port.addItem(p, p)
+        idx = self._wk_port.findText(prev)
+        if idx >= 0:
+            self._wk_port.setCurrentIndex(idx)
+        elif prev:
+            self._wk_port.setCurrentText(prev)
+        self._wk_port.blockSignals(False)
 
     def _refresh_keyer_ports(self) -> None:
         prev = self._keyer_midi_port.currentData()
@@ -407,6 +455,8 @@ class SettingsDialog(QDialog):
         cfg.keyer.dah_note = self._keyer_dah_note.value()
         cfg.keyer.mode = self._keyer_mode.currentData()
         cfg.keyer.wpm = self._keyer_wpm.value()
+        wk = self._wk_port.currentText().strip()
+        cfg.keyer.winkeyer_port = "" if wk == "(none)" else wk
 
         self.accept()
 

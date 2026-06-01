@@ -102,6 +102,7 @@ class KeyerConfig:
     dah_note: int = 37         # MIDI note for dah paddle  (C#2)
     mode: str = "iambic_a"     # straight | iambic_a | iambic_b
     wpm: int = 20              # words per minute
+    winkeyer_port: str = ""    # serial port for WinKeyer USB (e.g. /dev/ttyUSB2)
 
 
 @dataclass
@@ -131,7 +132,6 @@ class RemoteConfig:
     audio_stream: bool = True       # stream audio over UDP when sharing
     audio_udp_port: int = 5041      # UDP port for Opus audio (separate from TCP control)
     audio_bitrate: int = 64_000     # Opus encoder bitrate in bps
-    winkeyer_port: str = ""         # serial port for WinKeyer (shack side, e.g. /dev/ttyUSB2)
 
 
 @dataclass
@@ -219,6 +219,8 @@ def _dict_to_config(d: dict) -> AppConfig:
 
     if "keyer" in d:
         ky = d["keyer"]
+        # winkeyer_port: prefer [keyer] section; fall back to old [remote] location for migration
+        wk_port = ky.get("winkeyer_port", d.get("remote", {}).get("winkeyer_port", cfg.keyer.winkeyer_port))
         cfg.keyer = KeyerConfig(
             enabled=ky.get("enabled", cfg.keyer.enabled),
             midi_port=ky.get("midi_port", cfg.keyer.midi_port),
@@ -226,6 +228,7 @@ def _dict_to_config(d: dict) -> AppConfig:
             dah_note=ky.get("dah_note", cfg.keyer.dah_note),
             mode=ky.get("mode", cfg.keyer.mode),
             wpm=ky.get("wpm", cfg.keyer.wpm),
+            winkeyer_port=wk_port,
         )
 
     if "remote" in d:
@@ -239,7 +242,6 @@ def _dict_to_config(d: dict) -> AppConfig:
             audio_stream=rm.get("audio_stream", cfg.remote.audio_stream),
             audio_udp_port=rm.get("audio_udp_port", cfg.remote.audio_udp_port),
             audio_bitrate=rm.get("audio_bitrate", cfg.remote.audio_bitrate),
-            winkeyer_port=rm.get("winkeyer_port", cfg.remote.winkeyer_port),
         )
 
     return cfg
