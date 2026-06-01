@@ -438,7 +438,7 @@ class MainWindow(QMainWindow):
         wk_port = self._config.keyer.winkeyer_port
         if wk_port and not self._winkeyer:
             try:
-                self._winkeyer = WinKeyer(wk_port, speed=self._config.keyer.wpm)
+                self._winkeyer = WinKeyer(wk_port, speed=self._config.keyer.wpm, mode=self._config.keyer.mode)
                 self._winkeyer.open()
             except Exception as e:
                 logger.error("WinKeyer failed to open on %s: %s", wk_port, e)
