@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <rect width="128" height="128" rx="20" fill="#1a1a2e"/>
+  <text x="64" y="72" font-family="monospace" font-weight="bold" font-size="52"
+        text-anchor="middle" fill="#e94560">5T</text>
+  <line x1="20" y1="95" x2="108" y2="95" stroke="#0f3460" stroke-width="4" stroke-linecap="round"/>
+  <line x1="20" y1="105" x2="80" y2="105" stroke="#0f3460" stroke-width="3" stroke-linecap="round"/>
+</svg>
