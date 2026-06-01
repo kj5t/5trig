@@ -265,6 +265,19 @@ class CATRadio:
         raw = self.build_set_ptt(tx)
         self.enqueue(CATCommand(raw=raw, reply_len=0, priority=1))
 
+    def cw_key(self, down: bool) -> None:
+        """Key down/up for CW via RTS on the serial port.
+
+        Yaesu radios use the RTS line of the CAT serial port for CW
+        keying (configured in the radio menu as "RTS" for the KEY
+        function).  Toggling RTS is instantaneous — no CAT command
+        round-trip — giving clean, jitter-free keying.
+        """
+        if self._transport is None:
+            return
+        ser = self._transport.serial
+        ser.rts = down
+
     # ------------------------------------------------------------------
     # Subclass interface (must override)
     # ------------------------------------------------------------------

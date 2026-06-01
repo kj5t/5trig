@@ -378,7 +378,9 @@ class MainWindow(QMainWindow):
                     sample_rate=self._config.waterfall.sample_rate,
                 )
                 self._audio_udp_client.start()
-            # No local audio scope in remote mode — server streams scope data
+                # Run local FFT on decoded audio for the waterfall
+                self._start_remote_audio_scope()
+
             if self._config.keyer.enabled:
                 await self._start_keyer()
             self._ptt_btn.setEnabled(True)
@@ -560,8 +562,18 @@ class MainWindow(QMainWindow):
         t = threading.Thread(target=self._audio_scope.start, daemon=True)
         t.start()
 
+    def _start_remote_audio_scope(self) -> None:
+        """Create an FFT processor fed by decoded remote audio for the waterfall."""
+        wf_cfg = self._config.waterfall
+        self._audio_scope = AudioScopeSource(
+            sample_rate=wf_cfg.sample_rate,
+            fft_size=wf_cfg.fft_size,
+        )
+        self._audio_scope.add_callback(self._on_audio_fft)
+        self._audio_udp_client.add_pcm_callback(self._audio_scope._process_samples)
+
     def _on_audio_fft(self, db_array) -> None:
-        """Called from sounddevice audio thread — must NOT touch Qt directly.
+        """Called from audio thread — must NOT touch Qt directly.
 
         Emit a signal instead; Qt routes it to the main thread via
         QueuedConnection before push_line() runs.

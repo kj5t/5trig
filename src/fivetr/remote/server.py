@@ -211,11 +211,7 @@ class RemoteServer:
             self._radio.set_ptt(bool(msg["on"]))
 
         elif t == "cw_key":
-            # Straight-key emulation via PTT.
-            # WinKeyer / Vail adapter sends key-down / key-up events;
-            # we toggle PTT to match.  Works in CW mode where the radio
-            # keys on PTT assertion.
-            self._radio.set_ptt(bool(msg["down"]))
+            self._radio.cw_key(bool(msg["down"]))
 
         elif t == "cat_raw":
             # Arbitrary CAT command string, e.g. "SV" to swap VFOs.

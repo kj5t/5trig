@@ -238,6 +238,7 @@ class AudioUDPClient:
         self._stream = None            # sounddevice.OutputStream
         self._running = False
         self._recv_thread: threading.Thread | None = None
+        self._pcm_callbacks: list = []
 
         # Jitter buffer: deque of decoded float32 PCM frames.
         # maxlen drops the oldest frames when we fall badly behind, preventing
@@ -245,6 +246,15 @@ class AudioUDPClient:
         self._buf: collections.deque = collections.deque(maxlen=MAX_BUFFER_FRAMES)
         self._partial = np.zeros(0, dtype=np.float32)
         self._buf_lock = threading.Lock()
+
+    def add_pcm_callback(self, cb) -> None:
+        self._pcm_callbacks.append(cb)
+
+    def remove_pcm_callback(self, cb) -> None:
+        try:
+            self._pcm_callbacks.remove(cb)
+        except ValueError:
+            pass
 
     def start(self) -> None:
         """Open the UDP socket, register with the server, and start playback."""
@@ -324,6 +334,11 @@ class AudioUDPClient:
                 )
                 with self._buf_lock:
                     self._buf.append(pcm)
+                for cb in self._pcm_callbacks:
+                    try:
+                        cb(pcm)
+                    except Exception:
+                        pass
             except Exception as exc:
                 logger.debug("Opus decode error: %s", exc)
 
