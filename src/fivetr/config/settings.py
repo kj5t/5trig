@@ -131,6 +131,7 @@ class RemoteConfig:
     audio_stream: bool = True       # stream audio over UDP when sharing
     audio_udp_port: int = 5041      # UDP port for Opus audio (separate from TCP control)
     audio_bitrate: int = 64_000     # Opus encoder bitrate in bps
+    winkeyer_port: str = ""         # serial port for WinKeyer (shack side, e.g. /dev/ttyUSB2)
 
 
 @dataclass
@@ -238,6 +239,7 @@ def _dict_to_config(d: dict) -> AppConfig:
             audio_stream=rm.get("audio_stream", cfg.remote.audio_stream),
             audio_udp_port=rm.get("audio_udp_port", cfg.remote.audio_udp_port),
             audio_bitrate=rm.get("audio_bitrate", cfg.remote.audio_bitrate),
+            winkeyer_port=rm.get("winkeyer_port", cfg.remote.winkeyer_port),
         )
 
     return cfg

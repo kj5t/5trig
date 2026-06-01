@@ -61,6 +61,7 @@ class RemoteRadio:
         self._recv_task: asyncio.Task | None = None
         # Set after the hello handshake if the server offers audio streaming
         self.audio_udp_port: int | None = None
+        self.has_winkeyer: bool = False
 
     # ------------------------------------------------------------------
     # Listener bus (same interface as CATRadio)
@@ -98,11 +99,13 @@ class RemoteRadio:
             if hello.get("t") == "hello":
                 self.state.model = hello.get("model", "Remote")
                 self.audio_udp_port = hello.get("audio_udp_port")
+                self.has_winkeyer = hello.get("winkeyer", False)
                 logger.info(
-                    "Connected to remote radio: %s (protocol v%s, audio UDP: %s)",
+                    "Connected to remote radio: %s (protocol v%s, audio UDP: %s, WinKeyer: %s)",
                     self.state.model,
                     hello.get("ver", "?"),
                     self.audio_udp_port or "none",
+                    "yes" if self.has_winkeyer else "no",
                 )
         except asyncio.TimeoutError:
             logger.warning("No hello received from server — continuing anyway")
@@ -152,6 +155,10 @@ class RemoteRadio:
     def cw_key(self, down: bool) -> None:
         """Key down / key up for CW operation (WinKeyer / Vail / straight key)."""
         self._send_nowait({"t": "cw_key", "down": down})
+
+    def paddle(self, dit: bool, dah: bool) -> None:
+        """Send raw paddle state to the server's WinKeyer."""
+        self._send_nowait({"t": "paddle", "dit": dit, "dah": dah})
 
     def enqueue(self, cmd: CATCommand) -> None:
         """Send a raw CAT command to the shack radio via the server."""

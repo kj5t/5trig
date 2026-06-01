@@ -51,11 +51,13 @@ class RemoteServer:
         audio_port: int | None = 5041,
         audio_bitrate: int = 64_000,
         sample_rate: int = 48000,
+        winkeyer=None,
     ) -> None:
         self._radio = radio
         self._host = host
         self._port = port
         self._server: asyncio.Server | None = None
+        self._winkeyer = winkeyer
         # writers of currently connected clients
         self._clients: set[asyncio.StreamWriter] = set()
 
@@ -161,6 +163,8 @@ class RemoteServer:
         }
         if self._audio_server:
             hello["audio_udp_port"] = self._audio_server.port
+        if self._winkeyer and self._winkeyer.is_open:
+            hello["winkeyer"] = True
         try:
             await send_msg(writer, hello)
             # Send current state immediately so the client shows real data
@@ -211,7 +215,14 @@ class RemoteServer:
             self._radio.set_ptt(bool(msg["on"]))
 
         elif t == "cw_key":
-            self._radio.cw_key(bool(msg["down"]))
+            if self._winkeyer and self._winkeyer.is_open:
+                self._winkeyer.key_immediate(bool(msg["down"]))
+            else:
+                self._radio.cw_key(bool(msg["down"]))
+
+        elif t == "paddle":
+            if self._winkeyer and self._winkeyer.is_open:
+                self._winkeyer.paddle(bool(msg.get("dit")), bool(msg.get("dah")))
 
         elif t == "cat_raw":
             # Arbitrary CAT command string, e.g. "SV" to swap VFOs.

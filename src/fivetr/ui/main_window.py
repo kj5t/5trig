@@ -34,6 +34,7 @@ from ..cluster.spot import DXSpot
 from ..config.settings import AppConfig, load_config, save_config
 from ..logging.adif import ADIFLog
 from ..logging.udp_log import UDPDestination, UDPLogger
+from ..keyer.winkeyer import WinKeyer
 from ..remote.audio import AudioUDPClient
 from ..remote.client import RemoteRadio
 from ..remote.server import RemoteServer
@@ -117,6 +118,7 @@ class MainWindow(QMainWindow):
         self._audio_scope: AudioScopeSource | None = None
         self._remote_server: RemoteServer | None = None
         self._audio_udp_client: AudioUDPClient | None = None
+        self._winkeyer: WinKeyer | None = None
         self._keyer: CWKeyer | None = None
         self._cluster: ClusterClient | None = None
         self._adif_log: ADIFLog | None = None
@@ -503,6 +505,14 @@ class MainWindow(QMainWindow):
     async def _start_remote_server(self) -> None:
         rm_cfg = self._config.remote
         audio_port = rm_cfg.audio_udp_port if rm_cfg.audio_stream else None
+        # Open WinKeyer if configured
+        if rm_cfg.winkeyer_port and not self._winkeyer:
+            try:
+                self._winkeyer = WinKeyer(rm_cfg.winkeyer_port, speed=self._config.keyer.wpm)
+                self._winkeyer.open()
+            except Exception as e:
+                logger.error("WinKeyer failed to open on %s: %s", rm_cfg.winkeyer_port, e)
+                self._winkeyer = None
         self._remote_server = RemoteServer(
             self._radio,
             host=rm_cfg.share_host,
@@ -510,6 +520,7 @@ class MainWindow(QMainWindow):
             audio_port=audio_port,
             audio_bitrate=rm_cfg.audio_bitrate,
             sample_rate=self._config.waterfall.sample_rate,
+            winkeyer=self._winkeyer,
         )
         if self._audio_scope:
             # Forward FFT frames for the remote waterfall
@@ -542,6 +553,9 @@ class MainWindow(QMainWindow):
                 self._audio_scope.remove_pcm_callback(self._remote_server.on_pcm)
             await self._remote_server.stop()
             self._remote_server = None
+        if self._winkeyer:
+            self._winkeyer.close()
+            self._winkeyer = None
         self._status_remote.setText("")
 
     # ------------------------------------------------------------------

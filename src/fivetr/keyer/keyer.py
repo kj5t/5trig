@@ -55,6 +55,8 @@ class CWKeyer:
         self._config = config
         self._key_state_cb = key_state_callback
         self._running = False
+        self._dit_held = False
+        self._dah_held = False
 
         mode = KeyerMode(config.mode)
         self._iambic = IambicKeyer(
@@ -117,8 +119,17 @@ class CWKeyer:
         """Dispatch MIDI note events to the iambic paddle inputs."""
         cfg = self._config
         if note == cfg.dit_note:
+            # Remote + WinKeyer: send raw paddle state, skip local iambic
+            if getattr(self._radio, "has_winkeyer", False):
+                self._dit_held = pressed
+                self._radio.paddle(dit=self._dit_held, dah=self._dah_held)
+                return
             self._iambic.set_dit(pressed)
         elif note == cfg.dah_note:
+            if getattr(self._radio, "has_winkeyer", False):
+                self._dah_held = pressed
+                self._radio.paddle(dit=self._dit_held, dah=self._dah_held)
+                return
             self._iambic.set_dah(pressed)
         else:
             logger.debug("MIDI note %d %s — not mapped", note, "ON" if pressed else "OFF")
