@@ -753,9 +753,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _on_macro_triggered(self, idx: int) -> None:
-        """Send CW macro slot *idx* via WinKeyer."""
-        if not self._winkeyer or not self._winkeyer.is_open:
-            return
+        """Send CW macro slot *idx* via WinKeyer (local or remote)."""
         macros = self._config.cw_macros
         if idx >= len(macros):
             return
@@ -763,13 +761,20 @@ class MainWindow(QMainWindow):
         if not text:
             return
         text = text.replace("{CALL}", self._config.callsign or "")
-        self._winkeyer.clear_buffer()
-        self._winkeyer.send_text(text)
-        self._macro_widget.set_active(True)
+
+        if isinstance(self._radio, RemoteRadio):
+            self._radio.cw_send_text(text)
+            self._macro_widget.set_active(True)
+        elif self._winkeyer and self._winkeyer.is_open:
+            self._winkeyer.clear_buffer()
+            self._winkeyer.send_text(text)
+            self._macro_widget.set_active(True)
 
     def _on_macro_stop(self) -> None:
         """Abort current WinKeyer transmission."""
-        if self._winkeyer and self._winkeyer.is_open:
+        if isinstance(self._radio, RemoteRadio):
+            self._radio.cw_stop()
+        elif self._winkeyer and self._winkeyer.is_open:
             self._winkeyer.clear_buffer()
         self._macro_widget.set_active(False)
 

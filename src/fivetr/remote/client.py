@@ -160,6 +160,14 @@ class RemoteRadio:
         """Send raw paddle state to the server's WinKeyer."""
         self._send_nowait({"t": "paddle", "dit": dit, "dah": dah})
 
+    def cw_send_text(self, text: str) -> None:
+        """Send CW message text to the server's WinKeyer."""
+        self._send_nowait({"t": "cw_text", "text": text})
+
+    def cw_stop(self) -> None:
+        """Abort the current CW transmission on the server."""
+        self._send_nowait({"t": "cw_stop"})
+
     def enqueue(self, cmd: CATCommand) -> None:
         """Send a raw CAT command to the shack radio via the server."""
         raw_str = cmd.raw.decode("ascii", errors="ignore").rstrip(";")

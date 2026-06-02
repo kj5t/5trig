@@ -225,6 +225,15 @@ class RemoteServer:
                 down = bool(msg.get("dit")) or bool(msg.get("dah"))
                 self._winkeyer.key_immediate(down)
 
+        elif t == "cw_text":
+            if self._winkeyer and self._winkeyer.is_open:
+                self._winkeyer.clear_buffer()
+                self._winkeyer.send_text(str(msg["text"]))
+
+        elif t == "cw_stop":
+            if self._winkeyer and self._winkeyer.is_open:
+                self._winkeyer.clear_buffer()
+
         elif t == "cat_raw":
             # Arbitrary CAT command string, e.g. "SV" to swap VFOs.
             from ..cat.base import CATCommand
