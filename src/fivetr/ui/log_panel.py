@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -50,6 +51,7 @@ class LogPanel(QWidget):
         self._udp = udp_logger
         self._current_freq_khz: float = 14074.0
         self._current_mode: str = "USB"
+        self._populating = False
 
         layout = QVBoxLayout(self)
 
@@ -138,8 +140,9 @@ class LogPanel(QWidget):
         self._table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
         )
-        self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._table.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked)
         self._table.setSortingEnabled(True)
+        self._table.cellChanged.connect(self._on_cell_changed)
         return self._table
 
     def _build_toolbar(self) -> QHBoxLayout:
@@ -147,6 +150,15 @@ class LogPanel(QWidget):
         export_btn = QPushButton("Export ADIF…")
         export_btn.clicked.connect(self._on_export)
         layout.addWidget(export_btn)
+
+        delete_btn = QPushButton("Delete Selected")
+        delete_btn.setStyleSheet(
+            "QPushButton { color: #CC4444; }"
+            "QPushButton:hover { background-color: #2D1010; }"
+        )
+        delete_btn.clicked.connect(self._on_delete)
+        layout.addWidget(delete_btn)
+
         layout.addStretch()
         return layout
 
@@ -205,10 +217,14 @@ class LogPanel(QWidget):
     # ------------------------------------------------------------------
 
     def _populate_table(self) -> None:
+        self._populating = True
         for qso in self._log.records:
             self._add_row(qso)
+        self._populating = False
 
     def _add_row(self, qso: QSORecord) -> None:
+        was_populating = self._populating
+        self._populating = True
         row = self._table.rowCount()
         self._table.insertRow(row)
         cells = [
@@ -226,3 +242,45 @@ class LogPanel(QWidget):
             item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self._table.setItem(row, col, item)
         self._table.scrollToBottom()
+        self._populating = was_populating
+
+    _COL_ATTRS = ["_utc", "call", "freq_khz", "mode", "rst_sent", "rst_rcvd", "name", "notes"]
+
+    def _on_cell_changed(self, row: int, col: int) -> None:
+        if self._populating:
+            return
+        if row >= len(self._log.records):
+            return
+        qso = self._log.records[row]
+        value = self._table.item(row, col).text().strip()
+        attr = self._COL_ATTRS[col]
+        if attr == "_utc":
+            return
+        if attr == "freq_khz":
+            try:
+                qso.freq_khz = float(value) * 1000
+            except ValueError:
+                return
+        else:
+            setattr(qso, attr, value)
+        self._log.update(row, qso)
+
+    def _on_delete(self) -> None:
+        rows = sorted({idx.row() for idx in self._table.selectedIndexes()}, reverse=True)
+        if not rows:
+            return
+        n = len(rows)
+        reply = QMessageBox.question(
+            self,
+            "Delete QSO",
+            f"Delete {n} selected QSO{'s' if n > 1 else ''}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self._populating = True
+        for row in rows:
+            if row < len(self._log.records):
+                self._log.delete(row)
+            self._table.removeRow(row)
+        self._populating = False

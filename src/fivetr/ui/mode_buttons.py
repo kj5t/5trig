@@ -71,8 +71,12 @@ class ModePanel(QWidget):
 
     def set_mode(self, mode: Mode) -> None:
         btn = self._mode_map.get(mode)
-        if btn:
+        if btn and not btn.isChecked():
+            for b in self._mode_map.values():
+                b.blockSignals(True)
             btn.setChecked(True)
+            for b in self._mode_map.values():
+                b.blockSignals(False)
 
     def _on_clicked(self, mode: Mode) -> None:
         self.mode_selected.emit(mode)
