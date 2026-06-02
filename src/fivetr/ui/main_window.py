@@ -42,6 +42,7 @@ from ..spectrum.scope_audio import AudioScopeSource
 from ..vcat.server import VCATServer
 
 from .cluster_panel import ClusterPanel
+from .cw_keyboard import CWKeyboard
 from .freq_display import FreqDisplay
 from .keyer_widget import KeyerWidget
 from .macro_widget import MacroWidget
@@ -259,6 +260,12 @@ class MainWindow(QMainWindow):
         self._macro_widget.stop_triggered.connect(self._on_macro_stop)
         self._macro_widget.apply_macros(self._config.cw_macros, self._config.callsign)
         v_layout.addWidget(self._macro_widget)
+
+        # CW keyboard (type-ahead)
+        self._cw_keyboard = CWKeyboard()
+        self._cw_keyboard.char_sent.connect(self._on_cw_char)
+        self._cw_keyboard.stop_requested.connect(self._on_macro_stop)
+        v_layout.addWidget(self._cw_keyboard)
 
         # Waterfall
         self._waterfall = WaterfallWidget(rows=512, cols=1024)
@@ -777,6 +784,13 @@ class MainWindow(QMainWindow):
         elif self._winkeyer and self._winkeyer.is_open:
             self._winkeyer.clear_buffer()
         self._macro_widget.set_active(False)
+
+    def _on_cw_char(self, ch: str) -> None:
+        """Send a single character to the WinKeyer (local or remote)."""
+        if isinstance(self._radio, RemoteRadio):
+            self._radio.cw_send_text(ch)
+        elif self._winkeyer and self._winkeyer.is_open:
+            self._winkeyer.send_text(ch)
 
     # ------------------------------------------------------------------
     # VFO / Mode / PTT
