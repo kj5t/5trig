@@ -325,10 +325,9 @@ class CATRadio:
             self._transport.write(cmd.raw)
 
             if cmd.reply_len > 0 and cmd.callback:
-                # Give the _SerialProtocol time to accumulate the reply.
-                # In a real impl we'd use a future keyed by command; for
-                # MVP we use a short sleep + read from a response buffer.
                 await asyncio.sleep(0.05)
+            elif cmd.reply_len == 0:
+                await asyncio.sleep(0.03)
 
     async def _poll_loop(self) -> None:
         """Periodically enqueue state-refresh commands."""

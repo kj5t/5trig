@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import QButtonGroup, QHBoxLayout, QPushButton, QWidget
 
 from ..cat.base import Mode
@@ -57,6 +57,7 @@ class ModePanel(QWidget):
         self._group = QButtonGroup(self)
         self._group.setExclusive(True)
         self._mode_map: dict[Mode, QPushButton] = {}
+        self._user_pending = False
 
         for label, mode in _DISPLAY_MODES:
             btn = QPushButton(label)
@@ -69,7 +70,13 @@ class ModePanel(QWidget):
 
         layout.addStretch()
 
+        self._cooldown = QTimer(self)
+        self._cooldown.setSingleShot(True)
+        self._cooldown.timeout.connect(self._cooldown_expired)
+
     def set_mode(self, mode: Mode) -> None:
+        if self._user_pending:
+            return
         btn = self._mode_map.get(mode)
         if btn and not btn.isChecked():
             for b in self._mode_map.values():
@@ -79,4 +86,9 @@ class ModePanel(QWidget):
                 b.blockSignals(False)
 
     def _on_clicked(self, mode: Mode) -> None:
+        self._user_pending = True
+        self._cooldown.start(500)
         self.mode_selected.emit(mode)
+
+    def _cooldown_expired(self) -> None:
+        self._user_pending = False
