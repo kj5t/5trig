@@ -192,6 +192,10 @@ class RemoteRadio:
         """Send CW message text to the server's WinKeyer."""
         self._send_nowait({"t": "cw_text", "text": text})
 
+    def cw_send_char(self, ch: str) -> None:
+        """Send a single CW character without clearing the WinKeyer buffer."""
+        self._send_nowait({"t": "cw_char", "text": ch})
+
     def cw_stop(self) -> None:
         """Abort the current CW transmission on the server."""
         self._send_nowait({"t": "cw_stop"})

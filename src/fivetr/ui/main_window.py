@@ -865,7 +865,7 @@ class MainWindow(QMainWindow):
     def _on_cw_char(self, ch: str) -> None:
         """Send a single character to the WinKeyer (local or remote)."""
         if isinstance(self._radio, RemoteRadio):
-            self._radio.cw_send_text(ch)
+            self._radio.cw_send_char(ch)
         elif self._winkeyer and self._winkeyer.is_open:
             self._winkeyer.send_text(ch)
 

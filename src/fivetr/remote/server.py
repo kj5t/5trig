@@ -272,6 +272,10 @@ class RemoteServer:
                 self._winkeyer.clear_buffer()
                 self._winkeyer.send_text(str(msg["text"]))
 
+        elif t == "cw_char":
+            if self._winkeyer and self._winkeyer.is_open:
+                self._winkeyer.send_text(str(msg["text"]))
+
         elif t == "cw_stop":
             if self._winkeyer and self._winkeyer.is_open:
                 self._winkeyer.clear_buffer()
