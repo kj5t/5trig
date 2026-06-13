@@ -68,6 +68,7 @@ class RemoteServer:
         paddle_udp_port: int = 5042,
     ) -> None:
         self._radio = radio
+        self._loop = asyncio.get_event_loop()
         self._host = host
         self._port = port
         self._server: asyncio.Server | None = None
@@ -162,8 +163,7 @@ class RemoteServer:
             return
         msg = {"t": "scope", "d": encode_array(db_array)}
         try:
-            loop = asyncio.get_event_loop()
-            loop.call_soon_threadsafe(
+            self._loop.call_soon_threadsafe(
                 lambda: asyncio.ensure_future(self._broadcast(msg))
             )
         except RuntimeError:
@@ -304,8 +304,7 @@ class RemoteServer:
             return
         msg = {"t": "cw_key_state", "down": down}
         try:
-            loop = asyncio.get_event_loop()
-            loop.call_soon_threadsafe(
+            self._loop.call_soon_threadsafe(
                 lambda: asyncio.ensure_future(self._broadcast(msg))
             )
         except RuntimeError:
@@ -327,8 +326,7 @@ class RemoteServer:
             return
         msg = {"t": "cw_key_state", "down": busy}
         try:
-            loop = asyncio.get_event_loop()
-            loop.call_soon_threadsafe(
+            self._loop.call_soon_threadsafe(
                 lambda: asyncio.ensure_future(self._broadcast(msg))
             )
         except RuntimeError:
