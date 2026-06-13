@@ -893,8 +893,8 @@ class MainWindow(QMainWindow):
     async def _schedule_cw_events(self, events: list[tuple[bool, float]]) -> None:
         """Play key events with timing. Cancelled on macro stop."""
         for down, duration_ms in events:
-            await asyncio.sleep(duration_ms / 1000.0)
             self._on_wk_key_event(down)
+            await asyncio.sleep(duration_ms / 1000.0)
 
     # ------------------------------------------------------------------
     # VFO / Mode / PTT
