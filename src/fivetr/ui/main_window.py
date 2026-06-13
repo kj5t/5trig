@@ -852,6 +852,10 @@ class MainWindow(QMainWindow):
         elif self._winkeyer and self._winkeyer.is_open:
             self._winkeyer.send_text(ch)
 
+        if self._config.keyer.sidetone or self._config.keyer.enabled:
+            events = _generate_cw_events(ch.upper(), self._config.keyer.wpm)
+            asyncio.ensure_future(self._schedule_cw_events(events))
+
     # ------------------------------------------------------------------
     # Sidetone
     # ------------------------------------------------------------------
