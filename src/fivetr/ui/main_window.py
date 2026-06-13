@@ -181,6 +181,7 @@ class MainWindow(QMainWindow):
         self._macro_task: asyncio.Task | None = None
         self._keyboard_cw_queue: asyncio.Queue[str] = asyncio.Queue()
         self._keyboard_cw_task: asyncio.Task | None = None
+        self._keyboard_sideline_active = False
 
         self._setup_logging_backend()
         self._build_ui()
@@ -899,14 +900,14 @@ class MainWindow(QMainWindow):
     def _on_wk_key_event(self, down: bool) -> None:
         """Called from WinKeyer status thread on breakin change (key down/up)."""
         logger.info("WK key event: down=%s, sidetone=%s", down, self._sidetone is not None)
-        if self._sidetone:
+        if self._sidetone and not self._keyboard_sideline_active:
             self._sidetone.key(down)
         self._key_state.emit(down)
 
     def _on_wk_busy_event(self, busy: bool) -> None:
         """Called from WinKeyer status thread on buffer busy/idle."""
         logger.info("WK busy event: busy=%s, sidetone=%s", busy, self._sidetone is not None)
-        if self._sidetone:
+        if self._sidetone and not self._keyboard_sideline_active:
             self._sidetone.key(busy)
         self._key_state.emit(busy)
 
@@ -923,11 +924,15 @@ class MainWindow(QMainWindow):
             ch = await self._keyboard_cw_queue.get()
             if ch not in _CW_ELEMENTS:
                 continue
-            events = _generate_cw_events(ch, self._config.keyer.wpm)
-            await self._schedule_cw_events(events)
-            # Inter-character gap: _generate_cw_events for a single char
-            # leaves only 1 unit (element space). Add 2 more for 3-unit spacing.
-            await asyncio.sleep(2 * unit / 1000.0)
+            self._keyboard_sideline_active = True
+            try:
+                events = _generate_cw_events(ch, self._config.keyer.wpm)
+                await self._schedule_cw_events(events)
+                # Inter-character gap: _generate_cw_events for a single char
+                # leaves only 1 unit (element space). Add 2 more for 3-unit spacing.
+                await asyncio.sleep(2 * unit / 1000.0)
+            finally:
+                self._keyboard_sideline_active = False
 
     # ------------------------------------------------------------------
     # VFO / Mode / PTT
