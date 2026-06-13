@@ -22,7 +22,6 @@ from PySide6.QtWidgets import (
 )
 
 from ..config.settings import AppConfig
-from ..keyer.midi_input import MidiInput
 from ..spectrum.scope_audio import AudioScopeSource
 
 
@@ -192,7 +191,7 @@ class SettingsDialog(QDialog):
 
         # ---- Enable ----
         self._keyer_enabled = QCheckBox(
-            "Enable MIDI CW keyer (start automatically when radio connects)"
+            "Enable CW keyer (start automatically when radio connects)"
         )
         self._keyer_enabled.setChecked(cfg.enabled)
         layout.addWidget(self._keyer_enabled)
@@ -227,48 +226,6 @@ class SettingsDialog(QDialog):
         ))
         layout.addWidget(wk_box)
 
-        # ---- MIDI device ----
-        midi_box = QGroupBox("MIDI Input Device")
-        midi_form = QFormLayout(midi_box)
-
-        self._keyer_midi_port = QComboBox()
-        self._keyer_midi_port.setMinimumWidth(260)
-        self._keyer_midi_port.addItem("(auto — first non-passthrough port)", "")
-        for p in MidiInput.list_ports():
-            self._keyer_midi_port.addItem(p, p)
-        idx = self._keyer_midi_port.findData(cfg.midi_port)
-        if idx >= 0:
-            self._keyer_midi_port.setCurrentIndex(idx)
-
-        refresh_btn = QPushButton("Refresh")
-        refresh_btn.setMaximumWidth(70)
-        refresh_btn.clicked.connect(self._refresh_keyer_ports)
-
-        port_row = QWidget()
-        port_rl = QFormLayout(port_row)
-        port_rl.setContentsMargins(0, 0, 0, 0)
-        # Can't easily do horizontal in QFormLayout; use a label+combo inline
-        midi_form.addRow("Port:", self._keyer_midi_port)
-        midi_form.addRow("", refresh_btn)
-
-        self._keyer_dit_note = QSpinBox()
-        self._keyer_dit_note.setRange(0, 127)
-        self._keyer_dit_note.setValue(cfg.dit_note)
-        self._keyer_dit_note.setToolTip("MIDI note number for dit (left) paddle\nVail adapter default: 36 (C2)")
-
-        self._keyer_dah_note = QSpinBox()
-        self._keyer_dah_note.setRange(0, 127)
-        self._keyer_dah_note.setValue(cfg.dah_note)
-        self._keyer_dah_note.setToolTip("MIDI note number for dah (right) paddle\nVail adapter default: 37 (C#2)")
-
-        midi_form.addRow("Dit note (left paddle):", self._keyer_dit_note)
-        midi_form.addRow("Dah note (right paddle):", self._keyer_dah_note)
-        midi_form.addRow(QLabel(
-            "Vail adapter defaults: note 36 (dit) and 37 (dah).\n"
-            "WinKeyer USB in MIDI mode uses the same mapping.\n"
-            "Check your device documentation if paddles are swapped."
-        ))
-        layout.addWidget(midi_box)
 
         # ---- Keyer mode and speed ----
         mode_box = QGroupBox("Keyer Mode & Speed")
@@ -295,8 +252,8 @@ class SettingsDialog(QDialog):
         layout.addWidget(mode_box)
 
         layout.addWidget(QLabel(
-            "ℹ️  The keyer bar in the main window also lets you change port,\n"
-            "    mode, and WPM while connected without opening Settings."
+            "ℹ️  The keyer bar in the main window also lets you change\n"
+            "    mode and WPM while connected without opening Settings."
         ))
         layout.addStretch()
         return w
@@ -315,18 +272,6 @@ class SettingsDialog(QDialog):
         elif prev:
             self._wk_port.setCurrentText(prev)
         self._wk_port.blockSignals(False)
-
-    def _refresh_keyer_ports(self) -> None:
-        prev = self._keyer_midi_port.currentData()
-        self._keyer_midi_port.blockSignals(True)
-        self._keyer_midi_port.clear()
-        self._keyer_midi_port.addItem("(auto — first non-passthrough port)", "")
-        for p in MidiInput.list_ports():
-            self._keyer_midi_port.addItem(p, p)
-        idx = self._keyer_midi_port.findData(prev)
-        if idx >= 0:
-            self._keyer_midi_port.setCurrentIndex(idx)
-        self._keyer_midi_port.blockSignals(False)
 
     def _build_macros_tab(self) -> QWidget:
         w = QWidget()
@@ -418,7 +363,7 @@ class SettingsDialog(QDialog):
             "Restrict to 127.0.0.1 for loopback / SSH tunnel only.\n\n"
             "CW: remote clients can send PTT/key events; set radio to CW mode.\n"
             "WinKeyer / Vail adapter: use the cw_key protocol message from the\n"
-            "remote client — see docs for MIDI-to-key integration."
+            "remote client — see docs for key integration."
         ))
         layout.addWidget(server_box)
         layout.addStretch()
@@ -491,9 +436,6 @@ class SettingsDialog(QDialog):
         cfg.remote.share_host = self._remote_share_host.text().strip()
 
         cfg.keyer.enabled = self._keyer_enabled.isChecked()
-        cfg.keyer.midi_port = self._keyer_midi_port.currentData() or ""
-        cfg.keyer.dit_note = self._keyer_dit_note.value()
-        cfg.keyer.dah_note = self._keyer_dah_note.value()
         cfg.keyer.mode = self._keyer_mode.currentData()
         cfg.keyer.wpm = self._keyer_wpm.value()
         wk = self._wk_port.currentText().strip()

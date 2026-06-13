@@ -34,6 +34,7 @@ from ..cluster.spot import DXSpot
 from ..config.settings import AppConfig, load_config, save_config
 from ..logging.adif import ADIFLog
 from ..logging.udp_log import UDPDestination, UDPLogger
+from ..keyer.sidetone import SidetoneGenerator
 from ..keyer.winkeyer import WinKeyer
 from ..remote.audio import AudioUDPClient
 from ..remote.client import RemoteRadio
@@ -108,6 +109,7 @@ class MainWindow(QMainWindow):
     _spot_received = Signal(object)          # DXSpot
     _connection_changed = Signal(bool)       # connected?
     _scope_data = Signal(object)             # np.ndarray — crosses audio→main thread
+    _key_state = Signal(bool)                # key down/up — crosses WinKeyer thread→main thread
 
     def __init__(self) -> None:
         super().__init__()
@@ -122,6 +124,7 @@ class MainWindow(QMainWindow):
         self._audio_udp_client: AudioUDPClient | None = None
         self._winkeyer: WinKeyer | None = None
         self._keyer: CWKeyer | None = None
+        self._sidetone: SidetoneGenerator | None = None
         self._cluster: ClusterClient | None = None
         self._adif_log: ADIFLog | None = None
         self._udp_logger = UDPLogger()
@@ -359,6 +362,7 @@ class MainWindow(QMainWindow):
         # Audio thread → main thread: QueuedConnection happens automatically
         # because _waterfall lives on the main thread.
         self._scope_data.connect(self._waterfall.push_line)
+        self._key_state.connect(self._on_key_state_ui)
 
     # ------------------------------------------------------------------
     # Radio connection
@@ -414,6 +418,7 @@ class MainWindow(QMainWindow):
 
             if self._config.keyer.enabled:
                 await self._start_keyer()
+            self._start_sidetone()
             self._ptt_btn.setEnabled(True)
             self._ui_timer.start()
             self._connection_changed.emit(True)
@@ -473,6 +478,9 @@ class MainWindow(QMainWindow):
                 logger.error("WinKeyer failed to open on %s: %s", wk_port, e)
                 self._winkeyer = None
 
+        # Start sidetone if enabled
+        self._start_sidetone()
+
         # Start keyer if enabled
         if self._config.keyer.enabled:
             await self._start_keyer()
@@ -493,13 +501,17 @@ class MainWindow(QMainWindow):
         if self._keyer:
             await self._keyer.stop()
             self._keyer = None
-            self._keyer_widget.set_midi_connected(False)
             self._keyer_widget.set_key_active(False)
 
         # Stop remote audio client if running
         if self._audio_udp_client:
             self._audio_udp_client.stop()
             self._audio_udp_client = None
+
+        # Stop sidetone
+        if self._sidetone:
+            self._sidetone.stop()
+            self._sidetone = None
 
         # Close WinKeyer (opened at connect, independent of Share)
         if self._winkeyer:
@@ -557,6 +569,7 @@ class MainWindow(QMainWindow):
             audio_bitrate=rm_cfg.audio_bitrate,
             sample_rate=self._config.waterfall.sample_rate,
             winkeyer=self._winkeyer,
+            paddle_udp_port=rm_cfg.paddle_udp_port,
         )
         if self._audio_scope:
             # Forward FFT frames for the remote waterfall
@@ -641,53 +654,35 @@ class MainWindow(QMainWindow):
             key_state_callback=self._on_key_state,
         )
         await self._keyer.start()
-        self._keyer_widget.set_midi_connected(
-            self._keyer.is_midi_open,
-            self._config.keyer.midi_port,
-        )
 
     def _sync_keyer_config(self) -> None:
         """Copy widget state → config (before starting keyer)."""
         cfg = self._config.keyer
-        cfg.midi_port = self._keyer_widget.midi_port
         cfg.mode = self._keyer_widget.mode
         cfg.wpm = self._keyer_widget.wpm
 
     def _on_key_state(self, down: bool) -> None:
         """Called from asyncio loop when the key goes down/up.
 
-        Updates the LED in the keyer widget.  The widget lives on the
-        main thread; _on_key_state is called from the asyncio event loop
-        which is also the main thread (qasync bridge), so this is safe.
+        Updates the LED in the keyer widget and gates the sidetone.
         """
+        self._keyer_widget.set_key_active(down)
+        if self._sidetone and not (self._winkeyer and self._winkeyer.is_open):
+            self._sidetone.key(down)
+
+    def _on_key_state_ui(self, down: bool) -> None:
+        """Slot for _key_state signal — runs on main thread from WinKeyer thread."""
         self._keyer_widget.set_key_active(down)
 
     def _on_keyer_settings_changed(self) -> None:
-        """User changed MIDI port, mode, or WPM in the keyer widget.
-
-        Live WPM/mode changes are forwarded immediately; MIDI port change
-        requires a keyer restart.
-        """
+        """User changed mode or WPM in the keyer widget."""
         wpm = self._keyer_widget.wpm
-        # Propagate WPM to WinKeyer regardless of MIDI keyer state
         if self._winkeyer:
             self._winkeyer.set_speed(wpm)
         if self._keyer is None:
             return
-        # Live update WPM and mode — no restart needed
         self._keyer.update_wpm(wpm)
         self._keyer.update_mode(self._keyer_widget.mode)
-        # If the MIDI port selection changed, restart the keyer
-        new_port = self._keyer_widget.midi_port
-        if new_port != self._config.keyer.midi_port:
-            asyncio.ensure_future(self._restart_keyer())
-
-    async def _restart_keyer(self) -> None:
-        if self._keyer:
-            await self._keyer.stop()
-            self._keyer = None
-        if self._radio and self._radio.state.connected:
-            await self._start_keyer()
 
     # ------------------------------------------------------------------
     # Cluster
@@ -784,6 +779,9 @@ class MainWindow(QMainWindow):
         elif self._winkeyer and self._winkeyer.is_open:
             self._winkeyer.clear_buffer()
         self._macro_widget.set_active(False)
+        if self._sidetone:
+            self._sidetone.key(False)
+        self._key_state.emit(False)
 
     def _on_cw_char(self, ch: str) -> None:
         """Send a single character to the WinKeyer (local or remote)."""
@@ -791,6 +789,44 @@ class MainWindow(QMainWindow):
             self._radio.cw_send_text(ch)
         elif self._winkeyer and self._winkeyer.is_open:
             self._winkeyer.send_text(ch)
+
+    # ------------------------------------------------------------------
+    # Sidetone
+    # ------------------------------------------------------------------
+
+    def _start_sidetone(self) -> None:
+        """Start the software sidetone if enabled in config.
+
+        WinKeyer key / busy callbacks are always registered so the
+        TX indicator LED (and sidetone when enabled) work during
+        macro playback, regardless of the sidetone config setting.
+        """
+        logger.info("_start_sidetone called (remote=%s)", isinstance(self._radio, RemoteRadio))
+        if self._config.keyer.sidetone:
+            self._sidetone = SidetoneGenerator(
+                freq=self._config.keyer.sidetone_freq,
+                volume=self._config.keyer.sidetone_volume,
+            )
+            self._sidetone.start()
+        if self._winkeyer and self._winkeyer.is_open:
+            self._winkeyer.set_key_callback(self._on_wk_key_event)
+            self._winkeyer.set_busy_callback(self._on_wk_busy_event)
+        elif isinstance(self._radio, RemoteRadio):
+            self._radio.set_key_callback(self._on_wk_key_event)
+
+    def _on_wk_key_event(self, down: bool) -> None:
+        """Called from WinKeyer status thread on breakin change (key down/up)."""
+        logger.info("WK key event: down=%s, sidetone=%s", down, self._sidetone is not None)
+        if self._sidetone:
+            self._sidetone.key(down)
+        self._key_state.emit(down)
+
+    def _on_wk_busy_event(self, busy: bool) -> None:
+        """Called from WinKeyer status thread on buffer busy/idle."""
+        logger.info("WK busy event: busy=%s, sidetone=%s", busy, self._sidetone is not None)
+        if self._sidetone:
+            self._sidetone.key(busy)
+        self._key_state.emit(busy)
 
     # ------------------------------------------------------------------
     # VFO / Mode / PTT

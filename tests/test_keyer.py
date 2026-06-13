@@ -1,7 +1,7 @@
 """
 Tests for the CW keyer subsystem.
 
-All tests use the IambicKeyer directly (no radio, no MIDI hardware) so
+All tests use the IambicKeyer directly (no radio, no hardware) so
 they run without any attached devices.
 """
 from __future__ import annotations
@@ -10,7 +10,6 @@ import asyncio
 import pytest
 
 from fivetr.keyer.iambic import IambicKeyer, KeyerMode
-from fivetr.keyer.midi_input import MidiInput
 
 
 # ---------------------------------------------------------------------------
@@ -178,22 +177,6 @@ async def test_mode_b_inserts_extra_element():
     # Mode B should produce at least 2 elements (dit + extra dah)
     key_downs = events.count(True)
     assert key_downs >= 2, f"Mode B: expected extra element, got {key_downs} key-downs"
-
-
-# ---------------------------------------------------------------------------
-# MIDI port listing
-# ---------------------------------------------------------------------------
-
-def test_midi_list_ports_returns_list():
-    """list_ports() returns a list (may be empty if no MIDI hardware)."""
-    ports = MidiInput.list_ports()
-    assert isinstance(ports, list)
-
-
-def test_midi_probe_vail_returns_none_or_str():
-    """probe_vail() returns None or a port name string."""
-    result = MidiInput.probe_vail()
-    assert result is None or isinstance(result, str)
 
 
 # ---------------------------------------------------------------------------

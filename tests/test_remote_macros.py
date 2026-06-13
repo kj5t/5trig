@@ -32,6 +32,10 @@ class _FakeWinKeyer:
     def __init__(self):
         self.is_open = True
         self.calls: list[tuple[str, ...]] = []
+        self._key_callback = None
+
+    def set_key_callback(self, cb):
+        self._key_callback = cb
 
     def clear_buffer(self):
         self.calls.append(("clear_buffer",))

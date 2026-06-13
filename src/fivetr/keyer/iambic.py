@@ -1,7 +1,7 @@
 """
 Software iambic CW keyer state machine.
 
-Runs as an asyncio Task.  Paddle state is updated from the MIDI thread
+Runs as an asyncio Task.  Paddle state is updated from the reader thread
 via set_dit() / set_dah() (simple bool writes — atomic in CPython).
 The key_callback is invoked from the asyncio event loop for each
 key-down and key-up transition.
@@ -73,7 +73,7 @@ class IambicKeyer:
         self.wpm: int = wpm
         self.mode: KeyerMode = mode
 
-        # Paddle state — set from the MIDI thread, polled by the asyncio task.
+        # Paddle state — set from the reader thread, polled by the asyncio task.
         # CPython bool assignments are atomic; no lock needed.
         self._dit_held: bool = False
         self._dah_held: bool = False
@@ -103,7 +103,7 @@ class IambicKeyer:
         self._release()
 
     # ------------------------------------------------------------------
-    # Paddle interface  (called from MIDI thread)
+    # Paddle interface  (called from reader thread)
     # ------------------------------------------------------------------
 
     def set_dit(self, pressed: bool) -> None:

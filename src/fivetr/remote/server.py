@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import socket
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -29,6 +30,18 @@ if TYPE_CHECKING:
     from ..cat.base import CATRadio
 
 logger = logging.getLogger(__name__)
+
+
+class _PaddleUDP(asyncio.DatagramProtocol):
+    """Receive single-byte paddle datagrams: bit 0 = dit, bit 1 = dah."""
+
+    def __init__(self, winkeyer) -> None:
+        self._winkeyer = winkeyer
+
+    def datagram_received(self, data: bytes, addr) -> None:
+        if len(data) >= 1 and self._winkeyer and self._winkeyer.is_open:
+            b = data[0]
+            self._winkeyer.paddle(bool(b & 0x01), bool(b & 0x02))
 
 
 class RemoteServer:
@@ -52,12 +65,17 @@ class RemoteServer:
         audio_bitrate: int = 64_000,
         sample_rate: int = 48000,
         winkeyer=None,
+        paddle_udp_port: int = 5042,
     ) -> None:
         self._radio = radio
         self._host = host
         self._port = port
         self._server: asyncio.Server | None = None
         self._winkeyer = winkeyer
+        self._original_wk_callback = None
+        self._original_wk_busy_callback = None
+        self._paddle_udp_port = paddle_udp_port
+        self._paddle_transport: asyncio.DatagramTransport | None = None
         # writers of currently connected clients
         self._clients: set[asyncio.StreamWriter] = set()
 
@@ -84,15 +102,29 @@ class RemoteServer:
         )
         if self._audio_server:
             self._audio_server.start()
+        if self._winkeyer and self._winkeyer.is_open:
+            self._original_wk_callback = self._winkeyer._key_callback
+            self._winkeyer.set_key_callback(self._on_wk_key)
+            self._original_wk_busy_callback = self._winkeyer._busy_callback
+            self._winkeyer.set_busy_callback(self._on_wk_busy)
+            transport, _ = await asyncio.get_event_loop().create_datagram_endpoint(
+                lambda: _PaddleUDP(self._winkeyer),
+                local_addr=(self._host, self._paddle_udp_port),
+            )
+            self._paddle_transport = transport
         logger.info(
-            "Remote server listening on %s:%d (audio UDP: %s)",
+            "Remote server listening on %s:%d (audio UDP: %s, paddle UDP: %s)",
             self._host,
             self._port,
             self._audio_server.port if self._audio_server else "disabled",
+            self._paddle_udp_port if self._paddle_transport else "disabled",
         )
 
     async def stop(self) -> None:
         """Close the server and disconnect all clients."""
+        if self._paddle_transport:
+            self._paddle_transport.close()
+            self._paddle_transport = None
         if self._audio_server:
             self._audio_server.stop()
         if self._server:
@@ -155,6 +187,10 @@ class RemoteServer:
         logger.info("Remote client connected: %s", addr)
         self._clients.add(writer)
 
+        sock = writer.get_extra_info("socket")
+        if sock is not None:
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+
         # Greet the client with radio model info and optional audio UDP port
         hello: dict = {
             "t": "hello",
@@ -165,6 +201,8 @@ class RemoteServer:
             hello["audio_udp_port"] = self._audio_server.port
         if self._winkeyer and self._winkeyer.is_open:
             hello["winkeyer"] = True
+            if self._paddle_transport:
+                hello["paddle_udp_port"] = self._paddle_udp_port
         try:
             await send_msg(writer, hello)
             # Send current state immediately so the client shows real data
@@ -215,15 +253,19 @@ class RemoteServer:
             self._radio.set_ptt(bool(msg["on"]))
 
         elif t == "cw_key":
+            down = bool(msg["down"])
             if self._winkeyer and self._winkeyer.is_open:
-                self._winkeyer.key_immediate(bool(msg["down"]))
+                self._winkeyer.key_immediate(down)
             else:
-                self._radio.cw_key(bool(msg["down"]))
+                self._radio.cw_key(down)
+                # Without a WinKeyer there is no key callback to relay the
+                # state back, so send cw_key_state ourselves so remote
+                # clients can play sidetone.
+                await self._broadcast({"t": "cw_key_state", "down": down})
 
         elif t == "paddle":
             if self._winkeyer and self._winkeyer.is_open:
-                down = bool(msg.get("dit")) or bool(msg.get("dah"))
-                self._winkeyer.key_immediate(down)
+                self._winkeyer.paddle(bool(msg.get("dit")), bool(msg.get("dah")))
 
         elif t == "cw_text":
             if self._winkeyer and self._winkeyer.is_open:
@@ -248,6 +290,49 @@ class RemoteServer:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _on_wk_key(self, down: bool) -> None:
+        """Called from the WinKeyer status thread on key state change."""
+        # Chain the original callback (e.g. local sidetone) so sharing
+        # doesn't silence the shack operator.
+        if self._original_wk_callback:
+            try:
+                self._original_wk_callback(down)
+            except Exception:
+                pass
+        if not self._clients:
+            return
+        msg = {"t": "cw_key_state", "down": down}
+        try:
+            loop = asyncio.get_event_loop()
+            loop.call_soon_threadsafe(
+                lambda: asyncio.ensure_future(self._broadcast(msg))
+            )
+        except RuntimeError:
+            pass
+
+    def _on_wk_busy(self, busy: bool) -> None:
+        """Called from WinKeyer status thread on buffer busy/idle.
+
+        Chains the original busy callback (e.g. local sidetone) and
+        broadcasts as cw_key_state so remote clients see the indicator
+        during macro text playback when breakin bytes may not fire.
+        """
+        if self._original_wk_busy_callback:
+            try:
+                self._original_wk_busy_callback(busy)
+            except Exception:
+                pass
+        if not self._clients:
+            return
+        msg = {"t": "cw_key_state", "down": busy}
+        try:
+            loop = asyncio.get_event_loop()
+            loop.call_soon_threadsafe(
+                lambda: asyncio.ensure_future(self._broadcast(msg))
+            )
+        except RuntimeError:
+            pass
 
     async def _broadcast(self, msg: dict) -> None:
         """Send *msg* to all connected clients; remove dead ones."""

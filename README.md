@@ -128,7 +128,6 @@ src/fivetr/
 - [ ] LoTW / QRZ.com QSL upload
 - [ ] POTA spot integration
 - [ ] AUR PKGBUILD package
-- [ ] MIDI controller support (VFO knob via USB MIDI)
 
 ---
 

@@ -2,7 +2,6 @@
 CW keyer coordinator.
 
 Ties together:
-  MidiInput    ← USB MIDI device (Vail adapter, WinKeyer MIDI, foot switch…)
   IambicKeyer  ← software iambic state machine with Mode A / B / Straight
   Radio        ← RemoteRadio (cw_key over TCP) or local CATRadio (set_ptt)
 
@@ -24,13 +23,12 @@ import logging
 from typing import Callable
 
 from .iambic import IambicKeyer, KeyerMode
-from .midi_input import MidiInput
 
 logger = logging.getLogger(__name__)
 
 
 class CWKeyer:
-    """MIDI → iambic engine → radio PTT/CW key.
+    """Iambic engine → radio PTT/CW key.
 
     Parameters
     ----------
@@ -65,32 +63,25 @@ class CWKeyer:
             wpm=config.wpm,
             mode=mode,
         )
-        self._midi = MidiInput(
-            port_name=config.midi_port or None,
-            callback=self._on_midi_note,
-        )
 
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
     async def start(self) -> None:
-        """Start MIDI listener and iambic state machine."""
+        """Start iambic state machine."""
         self._loop = asyncio.get_event_loop()
         await self._iambic.start()
-        self._midi.start()
         self._running = True
         logger.info(
-            "CW keyer started — mode=%s  wpm=%d  midi=%r",
+            "CW keyer started — mode=%s  wpm=%d",
             self._config.mode,
             self._config.wpm,
-            self._config.midi_port or "(auto)",
         )
 
     async def stop(self) -> None:
         """Stop keyer and ensure PTT/key is released."""
         self._running = False
-        self._midi.stop()
         await self._iambic.stop()
         # Belt-and-suspenders: make sure PTT is off
         try:
@@ -98,10 +89,6 @@ class CWKeyer:
         except Exception:
             pass
         logger.info("CW keyer stopped")
-
-    @property
-    def is_midi_open(self) -> bool:
-        return self._midi.is_open
 
     def update_wpm(self, wpm: int) -> None:
         """Live WPM change — takes effect on the next element boundary."""
@@ -114,47 +101,13 @@ class CWKeyer:
         self._config.mode = mode
 
     # ------------------------------------------------------------------
-    # MIDI callback  (called from MIDI reader thread)
-    # ------------------------------------------------------------------
-
-    def _on_midi_note(self, note: int, pressed: bool) -> None:
-        """Dispatch MIDI note events to the iambic paddle inputs.
-
-        Called from the MIDI/evdev reader thread — must not call asyncio
-        coroutines directly.
-        """
-        cfg = self._config
-        if note == cfg.dit_note:
-            if getattr(self._radio, "has_winkeyer", False):
-                self._dit_held = pressed
-                self._send_paddle()
-                return
-            self._iambic.set_dit(pressed)
-        elif note == cfg.dah_note:
-            if getattr(self._radio, "has_winkeyer", False):
-                self._dah_held = pressed
-                self._send_paddle()
-                return
-            self._iambic.set_dah(pressed)
-        else:
-            logger.debug("MIDI note %d %s — not mapped", note, "ON" if pressed else "OFF")
-
-    def _send_paddle(self) -> None:
-        """Send paddle state to the remote WinKeyer, thread-safe."""
-        if self._loop is None:
-            logger.warning("paddle: no event loop")
-            return
-        dit, dah = self._dit_held, self._dah_held
-        logger.info("paddle → dit=%s dah=%s", dit, dah)
-        self._loop.call_soon_threadsafe(self._radio.paddle, dit, dah)
-
-    # ------------------------------------------------------------------
     # Key event callback  (called from asyncio event loop by IambicKeyer)
     # ------------------------------------------------------------------
 
     def _on_key_event(self, down: bool) -> None:
         """Called by the iambic state machine for each key-down / key-up."""
-        self._send_key(down)
+        if not getattr(self._radio, "has_winkeyer", False):
+            self._send_key(down)
         if self._key_state_cb:
             try:
                 self._key_state_cb(down)

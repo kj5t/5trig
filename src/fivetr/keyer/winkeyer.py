@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from typing import Callable
 
 import serial
 
@@ -86,6 +87,9 @@ class WinKeyer:
         self._lock = threading.Lock()
         self._stop_evt = threading.Event()
         self._reader: threading.Thread | None = None
+        self._key_callback: Callable[[bool], None] | None = None
+        self._busy_callback: Callable[[bool], None] | None = None
+        self._busy = False
 
     @property
     def is_open(self) -> bool:
@@ -94,6 +98,14 @@ class WinKeyer:
     @property
     def version(self) -> int:
         return self._version
+
+    def set_key_callback(self, cb: Callable[[bool], None] | None) -> None:
+        """Register a callback invoked with True/False on key down/up."""
+        self._key_callback = cb
+
+    def set_busy_callback(self, cb: Callable[[bool], None] | None) -> None:
+        """Register a callback invoked with True/False on buffer busy/idle."""
+        self._busy_callback = cb
 
     def open(self) -> None:
         """Open serial port and initialise WK host mode.
@@ -184,6 +196,11 @@ class WinKeyer:
     def key_immediate(self, down: bool) -> None:
         """Assert or release the KEY output immediately."""
         self._write(bytes([_CMD_KEY_IMM, 0x01 if down else 0x00]))
+        if self._key_callback:
+            try:
+                self._key_callback(down)
+            except Exception:
+                pass
 
     def paddle(self, dit: bool, dah: bool) -> None:
         """Set paddle state for the WinKeyer's built-in iambic keyer.
@@ -236,13 +253,39 @@ class WinKeyer:
         logger.debug("WK3 mode sent: 0x%02x (%s)", mode_byte, self._mode)
 
     def _read_loop(self) -> None:
-        """Drain WinKeyer status bytes in a background thread."""
+        """Drain WinKeyer status bytes in a background thread.
+
+        WK status bytes have bit 7 set.  Bit 2 (0x04) = buffer busy,
+        bit 1 (0x02) = breakin (key output active).  We track breakin
+        transitions to drive the sidetone callback.
+        """
         assert self._serial is not None
+        key_was_down = False
+        busy_was = False
         while not self._stop_evt.is_set():
             try:
                 data = self._serial.read(1)
-                if data:
-                    logger.debug("WK status: 0x%02x", data[0])
+                if not data:
+                    continue
+                b = data[0]
+                logger.debug("WK status: 0x%02x", b)
+                if b & 0x80:
+                    key_down = bool(b & 0x02)
+                    if key_down != key_was_down:
+                        key_was_down = key_down
+                        if self._key_callback:
+                            try:
+                                self._key_callback(key_down)
+                            except Exception:
+                                pass
+                    self._busy = bool(b & 0x04)
+                    if self._busy != busy_was:
+                        busy_was = self._busy
+                        if self._busy_callback:
+                            try:
+                                self._busy_callback(self._busy)
+                            except Exception:
+                                pass
             except Exception:
                 break
 

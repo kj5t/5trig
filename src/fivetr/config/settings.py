@@ -117,12 +117,12 @@ def _default_macros() -> list:
 class KeyerConfig:
     """CW keyer settings."""
     enabled: bool = False
-    midi_port: str = ""        # empty = auto-select first non-passthrough port
-    dit_note: int = 36         # MIDI note for dit paddle  (C2, Vail/WinKeyer default)
-    dah_note: int = 37         # MIDI note for dah paddle  (C#2)
     mode: str = "iambic_a"     # straight | iambic_a | iambic_b
     wpm: int = 20              # words per minute
     winkeyer_port: str = ""    # serial port for WinKeyer USB (e.g. /dev/ttyUSB2)
+    sidetone: bool = True      # enable software sidetone
+    sidetone_freq: int = 700   # sidetone frequency in Hz
+    sidetone_volume: float = 0.5  # sidetone volume 0.0–1.0
 
 
 @dataclass
@@ -152,6 +152,7 @@ class RemoteConfig:
     audio_stream: bool = True       # stream audio over UDP when sharing
     audio_udp_port: int = 5041      # UDP port for Opus audio (separate from TCP control)
     audio_bitrate: int = 64_000     # Opus encoder bitrate in bps
+    paddle_udp_port: int = 5042     # UDP port for low-latency paddle events
 
 
 @dataclass
@@ -244,12 +245,12 @@ def _dict_to_config(d: dict) -> AppConfig:
         wk_port = ky.get("winkeyer_port", d.get("remote", {}).get("winkeyer_port", cfg.keyer.winkeyer_port))
         cfg.keyer = KeyerConfig(
             enabled=ky.get("enabled", cfg.keyer.enabled),
-            midi_port=ky.get("midi_port", cfg.keyer.midi_port),
-            dit_note=ky.get("dit_note", cfg.keyer.dit_note),
-            dah_note=ky.get("dah_note", cfg.keyer.dah_note),
             mode=ky.get("mode", cfg.keyer.mode),
             wpm=ky.get("wpm", cfg.keyer.wpm),
             winkeyer_port=wk_port,
+            sidetone=ky.get("sidetone", cfg.keyer.sidetone),
+            sidetone_freq=ky.get("sidetone_freq", cfg.keyer.sidetone_freq),
+            sidetone_volume=ky.get("sidetone_volume", cfg.keyer.sidetone_volume),
         )
 
     if "remote" in d:

@@ -19,7 +19,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+import socket
+from typing import Any, Callable
 
 import numpy as np
 
@@ -62,10 +63,17 @@ class RemoteRadio:
         # Set after the hello handshake if the server offers audio streaming
         self.audio_udp_port: int | None = None
         self.has_winkeyer: bool = False
+        self._key_callback: Callable[[bool], None] | None = None
+        self._paddle_udp_port: int | None = None
+        self._paddle_sock: socket.socket | None = None
 
     # ------------------------------------------------------------------
     # Listener bus (same interface as CATRadio)
     # ------------------------------------------------------------------
+
+    def set_key_callback(self, cb: Callable[[bool], None] | None) -> None:
+        """Register a callback for remote key state (sidetone)."""
+        self._key_callback = cb
 
     def add_listener(self, fn) -> None:
         self._listeners.append(fn)
@@ -90,6 +98,9 @@ class RemoteRadio:
         self._reader, self._writer = await asyncio.open_connection(
             self._host, self._port
         )
+        sock = self._writer.get_extra_info("socket")
+        if sock is not None:
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self._running = True
         self.state.connected = True
 
@@ -100,12 +111,16 @@ class RemoteRadio:
                 self.state.model = hello.get("model", "Remote")
                 self.audio_udp_port = hello.get("audio_udp_port")
                 self.has_winkeyer = hello.get("winkeyer", False)
+                self._paddle_udp_port = hello.get("paddle_udp_port")
+                if self._paddle_udp_port:
+                    self._paddle_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 logger.info(
-                    "Connected to remote radio: %s (protocol v%s, audio UDP: %s, WinKeyer: %s)",
+                    "Connected to remote radio: %s (protocol v%s, audio UDP: %s, WinKeyer: %s, paddle UDP: %s)",
                     self.state.model,
                     hello.get("ver", "?"),
                     self.audio_udp_port or "none",
                     "yes" if self.has_winkeyer else "no",
+                    self._paddle_udp_port or "none",
                 )
         except asyncio.TimeoutError:
             logger.warning("No hello received from server — continuing anyway")
@@ -115,6 +130,10 @@ class RemoteRadio:
 
     async def disconnect(self) -> None:
         self._running = False
+        if self._paddle_sock:
+            self._paddle_sock.close()
+            self._paddle_sock = None
+            self._paddle_udp_port = None
         if self._recv_task:
             self._recv_task.cancel()
             try:
@@ -158,6 +177,15 @@ class RemoteRadio:
 
     def paddle(self, dit: bool, dah: bool) -> None:
         """Send raw paddle state to the server's WinKeyer."""
+        if self._paddle_sock and self._paddle_udp_port:
+            b = (0x01 if dit else 0x00) | (0x02 if dah else 0x00)
+            try:
+                self._paddle_sock.sendto(
+                    bytes([b]), (self._host, self._paddle_udp_port)
+                )
+            except OSError:
+                pass
+            return
         self._send_nowait({"t": "paddle", "dit": dit, "dah": dah})
 
     def cw_send_text(self, text: str) -> None:
@@ -220,6 +248,15 @@ class RemoteRadio:
         elif t == "scope":
             db = decode_array(msg["d"])
             await self._emit(RadioEvent.SCOPE_DATA, db)
+
+        elif t == "cw_key_state":
+            down = bool(msg["down"])
+            logger.info("cw_key_state received: down=%s, callback=%s", down, self._key_callback is not None)
+            if self._key_callback:
+                try:
+                    self._key_callback(down)
+                except Exception as exc:
+                    logger.error("key callback error: %s", exc)
 
         elif t == "hello":
             self.state.model = msg.get("model", self.state.model)
