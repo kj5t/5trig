@@ -179,6 +179,8 @@ class MainWindow(QMainWindow):
         self._adif_log: ADIFLog | None = None
         self._udp_logger = UDPLogger()
         self._macro_task: asyncio.Task | None = None
+        self._keyboard_cw_queue: asyncio.Queue[str] = asyncio.Queue()
+        self._keyboard_cw_task: asyncio.Task | None = None
 
         self._setup_logging_backend()
         self._build_ui()
@@ -532,6 +534,9 @@ class MainWindow(QMainWindow):
         # Start sidetone if enabled
         self._start_sidetone()
 
+        # Start keyboard CW sidetone consumer
+        self._keyboard_cw_task = asyncio.ensure_future(self._consume_keyboard_cw())
+
         # Start keyer if enabled
         if self._config.keyer.enabled:
             await self._start_keyer()
@@ -563,6 +568,13 @@ class MainWindow(QMainWindow):
         if self._sidetone:
             self._sidetone.stop()
             self._sidetone = None
+
+        # Cancel keyboard CW sidetone consumer
+        if self._keyboard_cw_task and not self._keyboard_cw_task.done():
+            self._keyboard_cw_task.cancel()
+            self._keyboard_cw_task = None
+        while not self._keyboard_cw_queue.empty():
+            self._keyboard_cw_queue.get_nowait()
 
         # Close WinKeyer (opened at connect, independent of Share)
         if self._winkeyer:
@@ -836,6 +848,8 @@ class MainWindow(QMainWindow):
         if self._macro_task and not self._macro_task.done():
             self._macro_task.cancel()
             self._macro_task = None
+        if self._keyboard_cw_task and not self._keyboard_cw_task.done():
+            self._keyboard_cw_task.cancel()
         if isinstance(self._radio, RemoteRadio):
             self._radio.cw_stop()
         elif self._winkeyer and self._winkeyer.is_open:
@@ -844,6 +858,9 @@ class MainWindow(QMainWindow):
         if self._sidetone:
             self._sidetone.key(False)
         self._key_state.emit(False)
+        # Clear queued keyboard chars so they don't play after stop
+        while not self._keyboard_cw_queue.empty():
+            self._keyboard_cw_queue.get_nowait()
 
     def _on_cw_char(self, ch: str) -> None:
         """Send a single character to the WinKeyer (local or remote)."""
@@ -853,8 +870,7 @@ class MainWindow(QMainWindow):
             self._winkeyer.send_text(ch)
 
         if self._config.keyer.sidetone or self._config.keyer.enabled:
-            events = _generate_cw_events(ch.upper(), self._config.keyer.wpm)
-            asyncio.ensure_future(self._schedule_cw_events(events))
+            self._keyboard_cw_queue.put_nowait(ch.upper())
 
     # ------------------------------------------------------------------
     # Sidetone
@@ -899,6 +915,19 @@ class MainWindow(QMainWindow):
         for down, duration_ms in events:
             self._on_wk_key_event(down)
             await asyncio.sleep(duration_ms / 1000.0)
+
+    async def _consume_keyboard_cw(self) -> None:
+        """Play sidetone for keyboard CW characters sequentially."""
+        unit = 1200.0 / self._config.keyer.wpm
+        while True:
+            ch = await self._keyboard_cw_queue.get()
+            if ch not in _CW_ELEMENTS:
+                continue
+            events = _generate_cw_events(ch, self._config.keyer.wpm)
+            await self._schedule_cw_events(events)
+            # Inter-character gap: _generate_cw_events for a single char
+            # leaves only 1 unit (element space). Add 2 more for 3-unit spacing.
+            await asyncio.sleep(2 * unit / 1000.0)
 
     # ------------------------------------------------------------------
     # VFO / Mode / PTT
