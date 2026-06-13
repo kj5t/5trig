@@ -57,6 +57,25 @@ from ..keyer.keyer import CWKeyer
 
 logger = logging.getLogger(__name__)
 
+# CW element sequence per character
+_CW_ELEMENTS: dict[str, str] = {
+    'A': '.-',    'B': '-...',  'C': '-.-.',  'D': '-..',
+    'E': '.',     'F': '..-.',  'G': '--.',   'H': '....',
+    'I': '..',    'J': '.---',  'K': '-.-',   'L': '.-..',
+    'M': '--',    'N': '-.',    'O': '---',   'P': '.--.',
+    'Q': '--.-',  'R': '.-.',   'S': '...',   'T': '-',
+    'U': '..-',   'V': '...-',  'W': '.--',   'X': '-..-',
+    'Y': '-.--',  'Z': '--..',
+    '0': '-----', '1': '.----', '2': '..---', '3': '...--',
+    '4': '....-', '5': '.....', '6': '-....', '7': '--...',
+    '8': '---..', '9': '----.',
+    '.': '.-.-.-', ',': '--..--', '?': '..--..', "'": '.----.',
+    '!': '-.-.--', '/': '-..-.',  '(': '-.--.',  ')': '-.--.-',
+    '&': '.-...',  ':': '---...', ';': '-.-.-.', '=': '-...-',
+    '+': '.-.-.',  '-': '-....-', '_': '..--.-', '"': '.-..-.',
+    '$': '...-..-','@': '.--.-.',
+}
+
 
 _RADIO_CLASSES: dict[str, type[CATRadio]] = {
     "FT-710": FT710,
@@ -101,6 +120,37 @@ QPushButton:pressed { background-color: #161B22; }
 """
 
 
+def _generate_cw_events(text: str, wpm: int) -> list[tuple[bool, float]]:
+    """Generate (key_down, duration_ms) events for CW macro sidetone simulation.
+
+    Breaks *text* into dit/dah elements and calculates timing from *wpm*
+    (dit unit = 1200 / wpm ms).  The remote client uses this to produce
+    realistic CW sidetone and TX LED during macro playback when the shack
+    WinKeyer's breakin bit isn't available.
+    """
+    unit = 1200.0 / wpm
+    events: list[tuple[bool, float]] = []
+
+    for i, ch in enumerate(text.upper()):
+        if ch == ' ':
+            if events:
+                events.append((False, 6 * unit))
+            continue
+
+        elems = _CW_ELEMENTS.get(ch)
+        if elems is None:
+            continue
+
+        for e in elems:
+            events.append((True, unit if e == '.' else 3 * unit))
+            events.append((False, unit))
+
+        if i < len(text) - 1 and text[i + 1] != ' ':
+            events.append((False, 2 * unit))
+
+    return events
+
+
 class MainWindow(QMainWindow):
     """5trig main application window."""
 
@@ -128,6 +178,7 @@ class MainWindow(QMainWindow):
         self._cluster: ClusterClient | None = None
         self._adif_log: ADIFLog | None = None
         self._udp_logger = UDPLogger()
+        self._macro_task: asyncio.Task | None = None
 
         self._setup_logging_backend()
         self._build_ui()
@@ -767,6 +818,14 @@ class MainWindow(QMainWindow):
         if isinstance(self._radio, RemoteRadio):
             self._radio.cw_send_text(text)
             self._macro_widget.set_active(True)
+            # Simulate local dit/dah events for sidetone + LED
+            # since the server's WinKeyer breakin bit doesn't fire
+            # reliably during text playback.
+            if self._config.keyer.sidetone or self._config.keyer.enabled:
+                events = _generate_cw_events(text, self._config.keyer.wpm)
+                self._macro_task = asyncio.ensure_future(
+                    self._schedule_cw_events(events)
+                )
         elif self._winkeyer and self._winkeyer.is_open:
             self._winkeyer.clear_buffer()
             self._winkeyer.send_text(text)
@@ -774,6 +833,9 @@ class MainWindow(QMainWindow):
 
     def _on_macro_stop(self) -> None:
         """Abort current WinKeyer transmission."""
+        if self._macro_task and not self._macro_task.done():
+            self._macro_task.cancel()
+            self._macro_task = None
         if isinstance(self._radio, RemoteRadio):
             self._radio.cw_stop()
         elif self._winkeyer and self._winkeyer.is_open:
@@ -827,6 +889,12 @@ class MainWindow(QMainWindow):
         if self._sidetone:
             self._sidetone.key(busy)
         self._key_state.emit(busy)
+
+    async def _schedule_cw_events(self, events: list[tuple[bool, float]]) -> None:
+        """Play key events with timing. Cancelled on macro stop."""
+        for down, duration_ms in events:
+            await asyncio.sleep(duration_ms / 1000.0)
+            self._on_wk_key_event(down)
 
     # ------------------------------------------------------------------
     # VFO / Mode / PTT
