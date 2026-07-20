@@ -94,6 +94,13 @@ class ClusterConfig:
 
 
 @dataclass
+class PotaConfig:
+    """POTA (Parks on the Air) spot feed."""
+    enabled: bool = True
+    poll_interval: float = 60.0    # seconds between polls of the POTA spot API
+
+
+@dataclass
 class CWMacro:
     """A single CW memory macro slot."""
     label: str = ""   # short button label (≤8 chars)
@@ -174,6 +181,7 @@ class AppConfig:
     waterfall: WaterfallConfig = field(default_factory=WaterfallConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     cluster: ClusterConfig = field(default_factory=ClusterConfig)
+    pota: PotaConfig = field(default_factory=PotaConfig)
     remote: RemoteConfig = field(default_factory=RemoteConfig)
     keyer: KeyerConfig = field(default_factory=KeyerConfig)
     cw_macros: list = field(default_factory=_default_macros)
@@ -244,6 +252,13 @@ def _dict_to_config(d: dict) -> AppConfig:
             port=cl.get("port", cfg.cluster.port),
             callsign=cl.get("callsign", cfg.cluster.callsign),
             auto_connect=cl.get("auto_connect", cfg.cluster.auto_connect),
+        )
+
+    if "pota" in d:
+        p = d["pota"]
+        cfg.pota = PotaConfig(
+            enabled=p.get("enabled", cfg.pota.enabled),
+            poll_interval=p.get("poll_interval", cfg.pota.poll_interval),
         )
 
     if "keyer" in d:

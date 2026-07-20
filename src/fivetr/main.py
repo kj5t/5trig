@@ -37,7 +37,7 @@ def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName("5trig")
     app.setOrganizationName("5tmuzak")
-    app.setApplicationVersion("0.1.0")
+    app.setApplicationVersion("0.2.0")
 
     # Import here so Qt app exists before any widget instantiation
     from .ui.main_window import MainWindow

@@ -44,6 +44,7 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._build_waterfall_tab(), "Waterfall")
         tabs.addTab(self._build_logging_tab(), "Logging")
         tabs.addTab(self._build_cluster_tab(), "DX Cluster")
+        tabs.addTab(self._build_pota_tab(), "POTA")
         tabs.addTab(self._build_keyer_tab(), "CW Keyer")
         tabs.addTab(self._build_macros_tab(), "CW Macros")
         tabs.addTab(self._build_remote_tab(), "Remote")
@@ -407,6 +408,26 @@ class SettingsDialog(QDialog):
         form.addRow(self._cluster_auto)
         return w
 
+    def _build_pota_tab(self) -> QWidget:
+        w = QWidget()
+        form = QFormLayout(w)
+        cfg = self._config.pota
+
+        self._pota_enabled = QCheckBox("Enable POTA spot feed")
+        self._pota_enabled.setChecked(cfg.enabled)
+        self._pota_poll_interval = QSpinBox()
+        self._pota_poll_interval.setRange(15, 600)
+        self._pota_poll_interval.setSuffix(" s")
+        self._pota_poll_interval.setValue(int(cfg.poll_interval))
+
+        form.addRow(self._pota_enabled)
+        form.addRow("Poll Interval:", self._pota_poll_interval)
+        form.addRow(QLabel(
+            "Fetches live activator spots from api.pota.app.\n"
+            "Double-click a spot in the POTA Spots panel to tune to it."
+        ))
+        return w
+
     # ------------------------------------------------------------------
     # Accept
     # ------------------------------------------------------------------
@@ -444,6 +465,9 @@ class SettingsDialog(QDialog):
         cfg.cluster.port = self._cluster_port.value()
         cfg.cluster.callsign = self._cluster_call.text().strip()
         cfg.cluster.auto_connect = self._cluster_auto.isChecked()
+
+        cfg.pota.enabled = self._pota_enabled.isChecked()
+        cfg.pota.poll_interval = float(self._pota_poll_interval.value())
 
         cfg.remote.client_enabled = self._remote_client_enabled.isChecked()
         cfg.remote.server_host = self._remote_server_host.text().strip()

@@ -126,7 +126,7 @@ src/fivetr/
 - [ ] Memory channel manager
 - [ ] Macro / CW keyer
 - [ ] LoTW / QRZ.com QSL upload
-- [ ] POTA spot integration
+- [x] POTA spot integration
 - [ ] AUR PKGBUILD package
 
 ---

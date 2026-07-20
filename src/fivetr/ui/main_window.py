@@ -36,6 +36,8 @@ from ..logging.adif import ADIFLog
 from ..logging.udp_log import UDPDestination, UDPLogger
 from ..keyer.sidetone import SidetoneGenerator
 from ..keyer.winkeyer import WinKeyer
+from ..pota.client import PotaClient
+from ..pota.spot import PotaSpot
 from ..remote.audio import AudioUDPClient
 from ..remote.client import RemoteRadio
 from ..remote.server import RemoteServer
@@ -51,6 +53,7 @@ from .macro_widget import MacroWidget
 from .log_panel import LogPanel
 from .meter_widget import MeterWidget
 from .mode_buttons import ModePanel
+from .pota_panel import PotaPanel
 from .settings_dialog import SettingsDialog
 from .waterfall_widget import WaterfallWidget
 from ..cat.base import Meters, Mode, VFO
@@ -158,6 +161,7 @@ class MainWindow(QMainWindow):
     # Internal signals for thread-safe UI updates
     _state_changed = Signal(object)          # RadioState
     _spot_received = Signal(object)          # DXSpot
+    _pota_spot_received = Signal(object)     # PotaSpot
     _connection_changed = Signal(bool)       # connected?
     _scope_data = Signal(object)             # np.ndarray — crosses audio→main thread
     _key_state = Signal(bool)                # key down/up — crosses WinKeyer thread→main thread
@@ -178,6 +182,7 @@ class MainWindow(QMainWindow):
         self._keyer: CWKeyer | None = None
         self._sidetone: SidetoneGenerator | None = None
         self._cluster: ClusterClient | None = None
+        self._pota: PotaClient | None = None
         self._adif_log: ADIFLog | None = None
         self._udp_logger = UDPLogger()
         self._macro_task: asyncio.Task | None = None
@@ -198,6 +203,11 @@ class MainWindow(QMainWindow):
         # Auto-connect in remote client mode
         if self._config.remote.client_enabled:
             QTimer.singleShot(0, lambda: self._connect_btn.setChecked(True))
+
+        # POTA spot feed is independent of radio connection — start once the
+        # asyncio event loop is running (not yet the case here in __init__).
+        if self._config.pota.enabled:
+            QTimer.singleShot(0, lambda: asyncio.ensure_future(self._start_pota()))
 
     # ------------------------------------------------------------------
     # UI construction
@@ -347,17 +357,28 @@ class MainWindow(QMainWindow):
         cluster_dock.setWidget(self._cluster_panel)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, cluster_dock)
 
+        # POTA Spots dock — tabbed with DX Cluster to save screen space
+        pota_dock = QDockWidget("POTA Spots", self)
+        pota_dock.setAllowedAreas(Qt.DockWidgetArea.RightDockWidgetArea)
+        self._pota_panel = PotaPanel()
+        self._pota_panel.tune_to.connect(self._tune_to)
+        pota_dock.setWidget(self._pota_panel)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, pota_dock)
+        self.tabifyDockWidget(cluster_dock, pota_dock)
+
     def _build_status_bar(self) -> None:
         sb: QStatusBar = self.statusBar()
         self._status_radio = QLabel("⚫ Disconnected")
         self._status_vcat = QLabel("vCAT: off")
         self._status_remote = QLabel("")       # shows share/client status
         self._status_cluster = QLabel("Cluster: off")
+        self._status_pota = QLabel("POTA: off")
         self._status_call = QLabel(f"📻 {self._config.callsign or '(no callsign)'}")
         sb.addWidget(self._status_radio)
         sb.addPermanentWidget(self._status_remote)
         sb.addPermanentWidget(self._status_vcat)
         sb.addPermanentWidget(self._status_cluster)
+        sb.addPermanentWidget(self._status_pota)
         sb.addPermanentWidget(self._status_call)
 
     def _build_menu(self) -> None:
@@ -414,6 +435,7 @@ class MainWindow(QMainWindow):
     def _connect_signals(self) -> None:
         self._state_changed.connect(self._on_state_changed)
         self._spot_received.connect(self._cluster_panel.add_spot)
+        self._pota_spot_received.connect(self._pota_panel.add_spot)
         self._connection_changed.connect(self._on_connection_changed)
         # Audio thread → main thread: QueuedConnection happens automatically
         # because _waterfall lives on the main thread.
@@ -819,6 +841,25 @@ class MainWindow(QMainWindow):
         self._status_cluster.setText(f"Cluster: {cfg.host}")
 
     # ------------------------------------------------------------------
+    # POTA
+    # ------------------------------------------------------------------
+
+    async def _start_pota(self) -> None:
+        cfg = self._config.pota
+        self._pota = PotaClient(poll_interval=cfg.poll_interval)
+        self._pota.add_spot_callback(
+            lambda spot: self._pota_spot_received.emit(spot)
+        )
+        await self._pota.start()
+        self._status_pota.setText("POTA: on")
+
+    async def _stop_pota(self) -> None:
+        if self._pota:
+            await self._pota.stop()
+            self._pota = None
+            self._status_pota.setText("POTA: off")
+
+    # ------------------------------------------------------------------
     # Radio event listener (asyncio coroutine)
     # ------------------------------------------------------------------
 
@@ -1077,6 +1118,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         asyncio.ensure_future(self._do_disconnect())
+        asyncio.ensure_future(self._stop_pota())
         save_config(self._config)
         self._udp_logger.close()
         event.accept()

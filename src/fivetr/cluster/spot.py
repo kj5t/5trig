@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
+from ..bandplan import freq_to_band as _freq_to_band
+
 # DX Spider spot format:
 # DX de W6ABC:      14074.0  VK2XYZ       FT8 -12 dB            1234Z
 _SPOT_RE = re.compile(
@@ -54,29 +56,6 @@ class DXSpot:
     @property
     def freq_mhz(self) -> float:
         return self.freq_khz / 1000.0
-
-
-def _freq_to_band(freq_khz: float) -> str:
-    mhz = freq_khz / 1000.0
-    ranges = [
-        (1.8, 2.0, "160m"),
-        (3.5, 4.0, "80m"),
-        (5.0, 5.5, "60m"),
-        (7.0, 7.3, "40m"),
-        (10.1, 10.15, "30m"),
-        (14.0, 14.35, "20m"),
-        (18.068, 18.168, "17m"),
-        (21.0, 21.45, "15m"),
-        (24.89, 24.99, "12m"),
-        (28.0, 29.7, "10m"),
-        (50.0, 54.0, "6m"),
-        (144.0, 148.0, "2m"),
-        (430.0, 440.0, "70cm"),
-    ]
-    for lo, hi, band in ranges:
-        if lo <= mhz <= hi:
-            return band
-    return "?"
 
 
 def _guess_mode(comment: str) -> str:
