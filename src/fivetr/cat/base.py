@@ -195,6 +195,7 @@ class CATRadio:
         self._protocol: Any = None    # asyncio protocol (_SerialProtocol)
         self._serial: Any = None      # alias kept for compat
         self._seq = 0                 # tie-breaker for equal priorities
+        self._polls_queued: set[bytes] = set()   # poll commands waiting to be sent
 
     # ------------------------------------------------------------------
     # Public API
@@ -317,6 +318,7 @@ class CATRadio:
                 )
             except TimeoutError:
                 continue
+            self._polls_queued.discard(cmd.raw)
 
             if not self._transport:
                 continue
@@ -332,9 +334,21 @@ class CATRadio:
     async def _poll_loop(self) -> None:
         """Periodically enqueue state-refresh commands."""
         while self._running:
-            for cmd in self.build_poll_commands():
-                self.enqueue(cmd)
+            self._enqueue_polls()
             await asyncio.sleep(self.POLL_INTERVAL)
+
+    def _enqueue_polls(self) -> None:
+        """Queue a round of state polls, unless the previous round is still being sent.
+
+        A round takes longer to send than POLL_INTERVAL.  Re-queueing every tick grew
+        the queue without bound, and the lower-priority polls (mode, S-meter) never
+        reached the front behind a steady supply of fresh frequency polls.
+        """
+        if self._polls_queued:
+            return
+        for cmd in self.build_poll_commands():
+            self._polls_queued.add(cmd.raw)
+            self.enqueue(cmd)
 
     async def _emit(self, event: RadioEvent, payload: Any) -> None:
         for listener in self._listeners:
