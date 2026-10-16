@@ -6,7 +6,8 @@ with Opus, and sends UDP packets to all registered remote clients.
 
 AudioUDPClient  — remote-side: receives UDP packets, decodes Opus, plays
 through the local sound output via sounddevice OutputStream with a jitter
-buffer.
+buffer, or into a named PipeWire sink (``output_target``) so that other
+programs such as WSJT-X can use the monitor of that sink as their input.
 
 UDP packet format:
   Bytes 0-3  sequence number (uint32 big-endian) — used for loss detection
@@ -26,9 +27,12 @@ is needed.  If the client receives no such key it skips audio setup.
 from __future__ import annotations
 
 import collections
+import contextlib
 import logging
+import queue
 import socket
 import struct
+import subprocess
 import threading
 
 import numpy as np
@@ -40,6 +44,22 @@ DEFAULT_BITRATE = 64_000      # 64 kbps — excellent for SSB / CW
 MAX_BUFFER_FRAMES = 15        # ~300 ms jitter buffer on the receiver
 
 _HDR = struct.Struct(">IH")   # seq (uint32) + payload_len (uint16)
+
+
+def pipewire_sink_exists(name: str) -> bool:
+    """True if PipeWire/PulseAudio knows a sink called *name*.
+
+    ``pw-play --target`` silently falls back to the default device when the
+    target is missing, which would play radio audio out of the speakers.
+    """
+    try:
+        out = subprocess.run(
+            ["pactl", "list", "short", "sinks"],
+            capture_output=True, text=True, timeout=3, check=True,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return any(line.split("\t")[1:2] == [name] for line in out.splitlines())
 
 
 class AudioUDPServer:
@@ -222,6 +242,10 @@ class AudioUDPClient:
         UDP port the AudioUDPServer is listening on.
     sample_rate:
         Must match the server's sample rate (typically 48000).
+    output_target:
+        Name of a PipeWire sink to play into (via ``pw-play``).  Empty means
+        the default output through sounddevice.  If the named sink does not
+        exist nothing is played, rather than falling back to the speakers.
     """
 
     def __init__(
@@ -229,9 +253,15 @@ class AudioUDPClient:
         server_host: str,
         server_udp_port: int,
         sample_rate: int = 48000,
+        output_target: str = "",
     ) -> None:
         self._server = (server_host, server_udp_port)
         self._sample_rate = sample_rate
+        self._output_target = output_target
+        self.output_error: str | None = None   # set when the RX sink could not be opened
+        self._pw_proc: subprocess.Popen | None = None
+        self._pw_queue: queue.Queue = queue.Queue(maxsize=MAX_BUFFER_FRAMES)
+        self._pw_thread: threading.Thread | None = None
 
         self._decoder = None
         self._sock: socket.socket | None = None
@@ -260,7 +290,8 @@ class AudioUDPClient:
         """Open the UDP socket, register with the server, and start playback."""
         try:
             import opuslib
-            import sounddevice as sd
+            if not self._output_target:
+                import sounddevice as sd
         except ImportError as exc:
             logger.error("Audio client deps missing: %s", exc)
             return
@@ -276,14 +307,17 @@ class AudioUDPClient:
         )
         self._recv_thread.start()
 
-        self._stream = sd.OutputStream(
-            samplerate=self._sample_rate,
-            channels=1,
-            dtype="float32",
-            blocksize=FRAME_SAMPLES,
-            callback=self._audio_callback,
-        )
-        self._stream.start()
+        if self._output_target:
+            self._start_pipewire_output()
+        else:
+            self._stream = sd.OutputStream(
+                samplerate=self._sample_rate,
+                channels=1,
+                dtype="float32",
+                blocksize=FRAME_SAMPLES,
+                callback=self._audio_callback,
+            )
+            self._stream.start()
         logger.info("Audio client started, streaming from %s", self._server)
 
     def stop(self) -> None:
@@ -305,11 +339,81 @@ class AudioUDPClient:
         if self._recv_thread:
             self._recv_thread.join(timeout=2)
             self._recv_thread = None
+        self._stop_pipewire_output()
         logger.info("Audio client stopped")
 
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
+
+    def _start_pipewire_output(self) -> None:
+        self.output_error = None
+        if not pipewire_sink_exists(self._output_target):
+            self.output_error = (
+                f"RX audio sink '{self._output_target}' not found - "
+                "run scripts/wsjtx-audio.sh up, or fix the name in Settings > Remote"
+            )
+            logger.error("%s; audio from the shack is not being played", self.output_error)
+            return
+        try:
+            self._pw_proc = subprocess.Popen(
+                [
+                    "pw-play", "--target", self._output_target,
+                    "--rate", str(self._sample_rate), "--channels", "1",
+                    "--format", "s16", "--latency", "40ms", "-a", "-",
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            self.output_error = f"RX audio: could not start pw-play ({exc})"
+            logger.error("Could not start pw-play: %s", exc)
+            return
+        self._pw_thread = threading.Thread(
+            target=self._pw_writer, name="audio-pw-writer", daemon=True
+        )
+        self._pw_thread.start()
+
+    def _stop_pipewire_output(self) -> None:
+        proc, self._pw_proc = self._pw_proc, None
+        if proc is None:
+            return
+        with contextlib.suppress(Exception):
+            proc.stdin.close()
+        try:
+            proc.terminate()
+            proc.wait(timeout=2)
+        except Exception:
+            proc.kill()
+        if self._pw_thread:
+            self._pw_thread.join(timeout=2)
+            self._pw_thread = None
+
+    def _pw_enqueue(self, pcm: np.ndarray) -> None:
+        data = (np.clip(pcm, -1.0, 1.0) * 32767).astype("<i2").tobytes()
+        try:
+            self._pw_queue.put_nowait(data)
+        except queue.Full:
+            with contextlib.suppress(queue.Empty):
+                self._pw_queue.get_nowait()      # drop the oldest, keep latency bounded
+            self._pw_queue.put_nowait(data)
+
+    def _pw_writer(self) -> None:
+        while self._running and self._pw_proc is not None:
+            try:
+                data = self._pw_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            proc = self._pw_proc
+            if proc is None or proc.stdin is None:
+                break
+            try:
+                proc.stdin.write(data)
+                proc.stdin.flush()
+            except (BrokenPipeError, ValueError, OSError):
+                logger.error("pw-play exited; RX audio output stopped")
+                break
 
     def _recv_loop(self) -> None:
         assert self._sock is not None
@@ -332,8 +436,11 @@ class AudioUDPClient:
                     .astype(np.float32)
                     / 32767.0
                 )
-                with self._buf_lock:
-                    self._buf.append(pcm)
+                if self._pw_proc is not None:
+                    self._pw_enqueue(pcm)
+                else:
+                    with self._buf_lock:
+                        self._buf.append(pcm)
                 for cb in self._pcm_callbacks:
                     try:
                         cb(pcm)

@@ -62,6 +62,8 @@ class RemoteRadio:
         self._recv_task: asyncio.Task | None = None
         # Set after the hello handshake if the server offers audio streaming
         self.audio_udp_port: int | None = None
+        self.tx_audio_udp_port: int | None = None
+        self.ptt_requested = False        # last PTT state we asked the shack for
         self.has_winkeyer: bool = False
         self._key_callback: Callable[[bool], None] | None = None
         self._paddle_udp_port: int | None = None
@@ -110,6 +112,7 @@ class RemoteRadio:
             if hello.get("t") == "hello":
                 self.state.model = hello.get("model", "Remote")
                 self.audio_udp_port = hello.get("audio_udp_port")
+                self.tx_audio_udp_port = hello.get("tx_audio_udp_port")
                 self.has_winkeyer = hello.get("winkeyer", False)
                 self._paddle_udp_port = hello.get("paddle_udp_port")
                 if self._paddle_udp_port:
@@ -169,6 +172,7 @@ class RemoteRadio:
         pass
 
     def set_ptt(self, tx: bool) -> None:
+        self.ptt_requested = tx
         self._send_nowait({"t": "set_ptt", "on": tx})
 
     def cw_key(self, down: bool) -> None:

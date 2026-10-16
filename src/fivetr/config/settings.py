@@ -153,6 +153,13 @@ class RemoteConfig:
     audio_udp_port: int = 5041      # UDP port for Opus audio (separate from TCP control)
     audio_bitrate: int = 64_000     # Opus encoder bitrate in bps
     paddle_udp_port: int = 5042     # UDP port for low-latency paddle events
+    # Client side: play the shack's audio into this PipeWire sink instead of the
+    # default output, so WSJT-X can record its monitor.  Empty = default output.
+    rx_audio_sink: str = ""
+    # Transmit audio (laptop -> shack).  Needs both ends configured.
+    tx_audio_udp_port: int = 5043   # UDP port on the shack
+    tx_audio_sink: str = ""         # shack: radio's USB sound-card playback sink (empty = off)
+    tx_capture_sink: str = ""       # client: sink WSJT-X plays into, e.g. fivetr_tx (empty = off)
 
 
 @dataclass
@@ -264,6 +271,11 @@ def _dict_to_config(d: dict) -> AppConfig:
             audio_stream=rm.get("audio_stream", cfg.remote.audio_stream),
             audio_udp_port=rm.get("audio_udp_port", cfg.remote.audio_udp_port),
             audio_bitrate=rm.get("audio_bitrate", cfg.remote.audio_bitrate),
+            paddle_udp_port=rm.get("paddle_udp_port", cfg.remote.paddle_udp_port),
+            rx_audio_sink=rm.get("rx_audio_sink", cfg.remote.rx_audio_sink),
+            tx_audio_udp_port=rm.get("tx_audio_udp_port", cfg.remote.tx_audio_udp_port),
+            tx_audio_sink=rm.get("tx_audio_sink", cfg.remote.tx_audio_sink),
+            tx_capture_sink=rm.get("tx_capture_sink", cfg.remote.tx_capture_sink),
         )
 
     if "cw_macros" in d:

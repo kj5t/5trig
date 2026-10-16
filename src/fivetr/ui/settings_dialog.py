@@ -337,6 +337,14 @@ class SettingsDialog(QDialog):
         client_form.addRow(self._remote_client_enabled)
         client_form.addRow("Shack server IP / host:", self._remote_server_host)
         client_form.addRow("Port:", self._remote_server_port)
+
+        self._remote_rx_sink = QLineEdit(cfg.rx_audio_sink)
+        self._remote_rx_sink.setPlaceholderText("empty = default output, e.g. fivetr_rx")
+        client_form.addRow("Play shack audio into PipeWire sink:", self._remote_rx_sink)
+
+        self._remote_tx_capture = QLineEdit(cfg.tx_capture_sink)
+        self._remote_tx_capture.setPlaceholderText("empty = no TX audio, e.g. fivetr_tx")
+        client_form.addRow("Send audio from PipeWire sink (TX):", self._remote_tx_capture)
         client_form.addRow(QLabel(
             "When enabled, the Radio tab's model / port settings are ignored.\n"
             "The shack machine must be running 5trig with Share 📡 active."
@@ -357,6 +365,14 @@ class SettingsDialog(QDialog):
 
         server_form.addRow(self._remote_share_enabled)
         server_form.addRow("Bind address:", self._remote_share_host)
+
+        self._remote_tx_sink = QLineEdit(cfg.tx_audio_sink)
+        self._remote_tx_sink.setPlaceholderText("radio's USB audio sink; empty = remote TX audio off")
+        server_form.addRow("Radio TX audio sink:", self._remote_tx_sink)
+        self._remote_tx_port = QSpinBox()
+        self._remote_tx_port.setRange(1024, 65535)
+        self._remote_tx_port.setValue(cfg.tx_audio_udp_port)
+        server_form.addRow("TX audio UDP port:", self._remote_tx_port)
         server_form.addRow(QLabel(
             "Port (shared with client setting above).\n"
             "Use 0.0.0.0 to accept connections on all network interfaces.\n"
@@ -432,6 +448,10 @@ class SettingsDialog(QDialog):
         cfg.remote.client_enabled = self._remote_client_enabled.isChecked()
         cfg.remote.server_host = self._remote_server_host.text().strip()
         cfg.remote.server_port = self._remote_server_port.value()
+        cfg.remote.rx_audio_sink = self._remote_rx_sink.text().strip()
+        cfg.remote.tx_capture_sink = self._remote_tx_capture.text().strip()
+        cfg.remote.tx_audio_sink = self._remote_tx_sink.text().strip()
+        cfg.remote.tx_audio_udp_port = self._remote_tx_port.value()
         cfg.remote.share_enabled = self._remote_share_enabled.isChecked()
         cfg.remote.share_host = self._remote_share_host.text().strip()
 

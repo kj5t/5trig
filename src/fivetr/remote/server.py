@@ -25,6 +25,7 @@ import numpy as np
 
 from .audio import AudioUDPServer
 from .protocol import PROTOCOL_VERSION, encode_array, recv_msg, send_msg
+from .txaudio import TxAudioReceiver, TxGate
 
 if TYPE_CHECKING:
     from ..cat.base import CATRadio
@@ -66,6 +67,8 @@ class RemoteServer:
         sample_rate: int = 48000,
         winkeyer=None,
         paddle_udp_port: int = 5042,
+        tx_audio_port: int | None = None,
+        tx_audio_sink: str = "",
     ) -> None:
         self._radio = radio
         self._loop = asyncio.get_event_loop()
@@ -79,6 +82,19 @@ class RemoteServer:
         self._paddle_transport: asyncio.DatagramTransport | None = None
         # writers of currently connected clients
         self._clients: set[asyncio.StreamWriter] = set()
+        # True between a client's "PTT on" and "PTT off"; gates remote TX audio
+        self._ptt_requested = False
+
+        self._tx_receiver: TxAudioReceiver | None = None
+        if tx_audio_port is not None and tx_audio_sink:
+            self._tx_receiver = TxAudioReceiver(
+                host=host,
+                port=tx_audio_port,
+                sink=tx_audio_sink,
+                allowed_ips=self._client_ips,
+                gate=TxGate(lambda: self._ptt_requested or self._radio.state.ptt),
+                sample_rate=sample_rate,
+            )
 
         self._audio_server: AudioUDPServer | None = None
         if audio_port is not None:
@@ -103,6 +119,8 @@ class RemoteServer:
         )
         if self._audio_server:
             self._audio_server.start()
+        if self._tx_receiver:
+            self._tx_receiver.start()
         if self._winkeyer and self._winkeyer.is_open:
             self._original_wk_callback = self._winkeyer._key_callback
             self._winkeyer.set_key_callback(self._on_wk_key)
@@ -128,6 +146,8 @@ class RemoteServer:
             self._paddle_transport = None
         if self._audio_server:
             self._audio_server.stop()
+        if self._tx_receiver:
+            self._tx_receiver.stop()
         if self._server:
             self._server.close()
             await self._server.wait_closed()
@@ -143,6 +163,19 @@ class RemoteServer:
     @property
     def client_count(self) -> int:
         return len(self._clients)
+
+    @property
+    def tx_audio_error(self) -> str | None:
+        """Why remote transmit audio is unavailable (None if fine or not configured)."""
+        return self._tx_receiver.error if self._tx_receiver else None
+
+    def _client_ips(self) -> set[str]:
+        ips: set[str] = set()
+        for writer in list(self._clients):
+            peer = writer.get_extra_info("peername")
+            if peer:
+                ips.add(peer[0])
+        return ips
 
     # ------------------------------------------------------------------
     # Callbacks wired by the shack-side main window
@@ -199,6 +232,8 @@ class RemoteServer:
         }
         if self._audio_server:
             hello["audio_udp_port"] = self._audio_server.port
+        if self._tx_receiver and self._tx_receiver.running:
+            hello["tx_audio_udp_port"] = self._tx_receiver.port
         if self._winkeyer and self._winkeyer.is_open:
             hello["winkeyer"] = True
             if self._paddle_transport:
@@ -231,6 +266,11 @@ class RemoteServer:
             except Exception:
                 pass
             logger.info("Remote client disconnected: %s", addr)
+            if not self._clients and self._ptt_requested:
+                # Nobody is left to unkey the radio.
+                logger.warning("Last client left while transmitting; releasing PTT")
+                self._ptt_requested = False
+                self._radio.set_ptt(False)
 
     # ------------------------------------------------------------------
     # Command dispatch
@@ -250,7 +290,8 @@ class RemoteServer:
             self._radio.set_mode(Mode.from_code(str(msg["code"])))
 
         elif t == "set_ptt":
-            self._radio.set_ptt(bool(msg["on"]))
+            self._ptt_requested = bool(msg["on"])
+            self._radio.set_ptt(self._ptt_requested)
 
         elif t == "cw_key":
             down = bool(msg["down"])

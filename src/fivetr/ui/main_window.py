@@ -39,6 +39,7 @@ from ..keyer.winkeyer import WinKeyer
 from ..remote.audio import AudioUDPClient
 from ..remote.client import RemoteRadio
 from ..remote.server import RemoteServer
+from ..remote.txaudio import TxAudioSender, TxGate
 from ..spectrum.scope_audio import AudioScopeSource
 from ..vcat.server import VCATServer
 
@@ -172,6 +173,7 @@ class MainWindow(QMainWindow):
         self._audio_scope: AudioScopeSource | None = None
         self._remote_server: RemoteServer | None = None
         self._audio_udp_client: AudioUDPClient | None = None
+        self._tx_audio_sender: TxAudioSender | None = None
         self._winkeyer: WinKeyer | None = None
         self._keyer: CWKeyer | None = None
         self._sidetone: SidetoneGenerator | None = None
@@ -428,6 +430,25 @@ class MainWindow(QMainWindow):
         else:
             asyncio.ensure_future(self._do_disconnect())
 
+    async def _start_vcat(self) -> None:
+        """Start the virtual CAT server (Kenwood + rigctld) on the current radio."""
+        if not self._config.vcat.enabled or self._radio is None:
+            return
+        self._vcat = VCATServer(
+            self._radio,
+            host=self._config.vcat.host,
+            port=self._config.vcat.port,
+        )
+        try:
+            await self._vcat.start()
+            self._status_vcat.setText(
+                f"vCAT: {self._config.vcat.host}:{self._config.vcat.port}"
+            )
+        except OSError as e:
+            logger.warning("vCAT server failed to start: %s", e)
+            self._status_vcat.setText(f"vCAT: port {self._config.vcat.port} in use")
+            self._vcat = None
+
     async def _do_connect(self) -> None:
         rm_cfg = self._config.remote
 
@@ -459,16 +480,26 @@ class MainWindow(QMainWindow):
                 return
 
             self._status_remote.setText(f"🛰 Remote: {host}:{port}")
+            # Virtual CAT on this machine, so WSJT-X and friends can control
+            # the shack radio through the remote link.
+            await self._start_vcat()
             # Start UDP audio client if the server advertised an audio port
             if self._radio.audio_udp_port is not None:
                 self._audio_udp_client = AudioUDPClient(
                     server_host=host,
                     server_udp_port=self._radio.audio_udp_port,
                     sample_rate=self._config.waterfall.sample_rate,
+                    output_target=self._config.remote.rx_audio_sink,
                 )
                 self._audio_udp_client.start()
+                if self._audio_udp_client.output_error:
+                    msg = self._audio_udp_client.output_error
+                    self._status_remote.setText(f"🛰 Remote: {host}:{port}  ⚠ no RX audio")
+                    self.statusBar().showMessage(f"⚠ {msg}", 30000)
                 # Run local FFT on decoded audio for the waterfall
                 self._start_remote_audio_scope()
+
+            self._start_tx_audio(host)
 
             if self._config.keyer.enabled:
                 await self._start_keyer()
@@ -499,20 +530,7 @@ class MainWindow(QMainWindow):
             return
 
         # Start virtual CAT
-        if self._config.vcat.enabled:
-            self._vcat = VCATServer(
-                self._radio,
-                host=self._config.vcat.host,
-                port=self._config.vcat.port,
-            )
-            try:
-                await self._vcat.start()
-                self._status_vcat.setText(
-                    f"vCAT: {self._config.vcat.host}:{self._config.vcat.port}"
-                )
-            except OSError as e:
-                logger.warning("vCAT server failed to start: %s", e)
-                self._status_vcat.setText(f"vCAT: port {self._config.vcat.port} in use")
+        await self._start_vcat()
 
         # Start audio scope if configured
         if self._config.waterfall.source == "audio":
@@ -559,6 +577,10 @@ class MainWindow(QMainWindow):
             await self._keyer.stop()
             self._keyer = None
             self._keyer_widget.set_key_active(False)
+
+        if self._tx_audio_sender:
+            self._tx_audio_sender.stop()
+            self._tx_audio_sender = None
 
         # Stop remote audio client if running
         if self._audio_udp_client:
@@ -634,6 +656,8 @@ class MainWindow(QMainWindow):
             sample_rate=self._config.waterfall.sample_rate,
             winkeyer=self._winkeyer,
             paddle_udp_port=rm_cfg.paddle_udp_port,
+            tx_audio_port=rm_cfg.tx_audio_udp_port if rm_cfg.tx_audio_sink else None,
+            tx_audio_sink=rm_cfg.tx_audio_sink,
         )
         if self._audio_scope:
             # Forward FFT frames for the remote waterfall
@@ -650,6 +674,15 @@ class MainWindow(QMainWindow):
                 f"📡 Sharing: {local_ip}:{rm_cfg.server_port}{audio_info}"
             )
             logger.info("Remote server started on port %d", rm_cfg.server_port)
+            if rm_cfg.tx_audio_sink:
+                err = self._remote_server.tx_audio_error
+                if err:
+                    self._status_remote.setText(self._status_remote.text() + "  ⚠ no TX audio")
+                    self.statusBar().showMessage(f"⚠ {err}", 30000)
+                else:
+                    self._status_remote.setText(
+                        self._status_remote.text() + f" + TX audio UDP:{rm_cfg.tx_audio_udp_port}"
+                    )
         except OSError as e:
             logger.error("Remote server failed to start: %s", e)
             self._status_remote.setText(f"📡 Share failed: port {rm_cfg.server_port} in use")
@@ -685,6 +718,30 @@ class MainWindow(QMainWindow):
         import threading
         t = threading.Thread(target=self._audio_scope.start, daemon=True)
         t.start()
+
+    def _start_tx_audio(self, host: str) -> None:
+        """Client mode: send WSJT-X's audio to the shack while PTT is requested."""
+        rm_cfg = self._config.remote
+        if not rm_cfg.tx_capture_sink:
+            return
+        radio = self._radio
+        if radio is None or radio.tx_audio_udp_port is None:
+            msg = ("TX audio not available: the shack is not offering it "
+                   "(set its TX audio sink in Settings > Remote and restart Share)")
+            logger.warning(msg)
+            self.statusBar().showMessage(f"⚠ {msg}", 30000)
+            return
+        self._tx_audio_sender = TxAudioSender(
+            server_host=host,
+            server_udp_port=radio.tx_audio_udp_port,
+            capture_sink=rm_cfg.tx_capture_sink,
+            gate=TxGate(lambda: radio.ptt_requested or radio.state.ptt),
+            sample_rate=self._config.waterfall.sample_rate,
+        )
+        self._tx_audio_sender.start()
+        if self._tx_audio_sender.error:
+            self.statusBar().showMessage(f"⚠ {self._tx_audio_sender.error}", 30000)
+            self._tx_audio_sender = None
 
     def _start_remote_audio_scope(self) -> None:
         """Create an FFT processor fed by decoded remote audio for the waterfall."""

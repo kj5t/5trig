@@ -26,6 +26,8 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
+from .rigctl import RigctlHandler
+
 if TYPE_CHECKING:
     from ..cat.base import CATRadio, Mode
 
@@ -90,12 +92,39 @@ class VCATServer:
         logger.info("vCAT client connected: %s", addr)
         self._clients.add(writer)
 
+        # The first chunk decides the dialect: Hamlib "NET rigctl" clients end every
+        # command with a newline, Kenwood CAT clients end with ';'.
+        rigctl: RigctlHandler | None = None
+        pending = ""
+        first = True
+
         try:
             while True:
                 data = await reader.read(256)
                 if not data:
                     break
-                for cmd in self._split_commands(data.decode(errors="ignore")):
+                text = data.decode(errors="ignore")
+                if first:
+                    first = False
+                    if "\n" in text:
+                        rigctl = RigctlHandler(self._radio)
+                        logger.info("vCAT client %s speaks rigctld protocol", addr)
+
+                if rigctl is not None:
+                    pending += text
+                    *lines, pending = pending.split("\n")
+                    for line in lines:
+                        reply = rigctl.process(line)
+                        if reply:
+                            writer.write(reply.encode())
+                        if rigctl.closing:
+                            break
+                    await writer.drain()
+                    if rigctl.closing:
+                        break
+                    continue
+
+                for cmd in self._split_commands(text):
                     reply = self._process(cmd)
                     if reply:
                         writer.write(reply.encode())
