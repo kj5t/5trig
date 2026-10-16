@@ -33,9 +33,13 @@ class _FakeWinKeyer:
         self.is_open = True
         self.calls: list[tuple[str, ...]] = []
         self._key_callback = None
+        self._busy_callback = None
 
     def set_key_callback(self, cb):
         self._key_callback = cb
+
+    def set_busy_callback(self, cb):
+        self._busy_callback = cb
 
     def clear_buffer(self):
         self.calls.append(("clear_buffer",))
@@ -103,7 +107,9 @@ class TestRemoteMacroRoundTrip:
     async def test_cw_text_round_trip(self):
         wk = _FakeWinKeyer()
         radio = _FakeRadio()
-        srv = RemoteServer(radio, host="127.0.0.1", port=0, audio_port=None, winkeyer=wk)
+        srv = RemoteServer(
+            radio, host="127.0.0.1", port=0, audio_port=None, winkeyer=wk, paddle_udp_port=0
+        )
         await srv.start()
         port = srv._server.sockets[0].getsockname()[1]
 
@@ -123,7 +129,9 @@ class TestRemoteMacroRoundTrip:
     async def test_cw_stop_round_trip(self):
         wk = _FakeWinKeyer()
         radio = _FakeRadio()
-        srv = RemoteServer(radio, host="127.0.0.1", port=0, audio_port=None, winkeyer=wk)
+        srv = RemoteServer(
+            radio, host="127.0.0.1", port=0, audio_port=None, winkeyer=wk, paddle_udp_port=0
+        )
         await srv.start()
         port = srv._server.sockets[0].getsockname()[1]
 
