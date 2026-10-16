@@ -30,6 +30,8 @@ import threading
 import time
 from collections.abc import Callable
 
+import numpy as np
+
 from .audio import pipewire_sink_exists
 
 logger = logging.getLogger(__name__)
@@ -42,6 +44,13 @@ PREBUFFER_FRAMES = 4                 # 80 ms queued before an over starts playin
 OVER_GAP_SECONDS = 0.25              # silence this long = the next packet starts a new over
 
 _SEQ = struct.Struct(">I")
+
+
+def _peak(pcm: bytes) -> int:
+    """Largest absolute sample in a block of s16le PCM (0 for an empty block)."""
+    if len(pcm) < 2:
+        return 0
+    return int(np.abs(np.frombuffer(pcm[: len(pcm) // 2 * 2], dtype="<i2").astype(np.int32)).max())
 
 
 class TxGate:
@@ -88,6 +97,8 @@ class TxAudioSender:
         self._running = False
         self._seq = 0
         self.packets_sent = 0
+        self._over_packets = 0
+        self._over_peak = 0
 
     def start(self) -> None:
         self.error = None
@@ -146,14 +157,31 @@ class TxAudioSender:
             if len(data) < FRAME_BYTES:
                 break                      # pw-record exited or we were stopped
             if not self._gate.is_open():
+                if self._over_packets:
+                    logger.info(
+                        "TX audio over finished: sent %d packets (%.1f s), peak level %d/32767",
+                        self._over_packets, self._over_packets * FRAME_SAMPLES / self._sample_rate,
+                        self._over_peak,
+                    )
+                    if self._over_peak == 0:
+                        logger.warning(
+                            "TX audio was silent: nothing is playing into '%s' "
+                            "(check WSJT-X Settings > Audio > Output)", self._sink,
+                        )
+                    self._over_packets = 0
+                    self._over_peak = 0
                 continue
+            if self._over_packets == 0:
+                logger.info("TX audio over started: PTT requested, sending to %s:%d", *self._server)
+            self._over_peak = max(self._over_peak, _peak(data))
             packet = _SEQ.pack(self._seq) + data
             self._seq = (self._seq + 1) & 0xFFFFFFFF
             try:
                 sock.sendto(packet, self._server)
                 self.packets_sent += 1
+                self._over_packets += 1
             except OSError as exc:
-                logger.debug("TX audio send failed: %s", exc)
+                logger.warning("TX audio send failed: %s", exc)
         if self._running:
             logger.error("pw-record exited; transmit audio stopped")
 
@@ -188,6 +216,9 @@ class TxAudioReceiver:
         self._prebuf: list[bytes] = []
         self._primed = False
         self._last_pcm = -1e9
+        self._over_played = 0
+        self._over_peak = 0
+        self._last_warn: dict[str, float] = {}
         # counters, mostly for tests and debugging
         self.played = 0
         self.dropped_foreign = 0
@@ -265,6 +296,7 @@ class TxAudioReceiver:
             try:
                 data, addr = sock.recvfrom(MAX_PAYLOAD + _SEQ.size)
             except TimeoutError:
+                self._finish_over()
                 continue
             except OSError:
                 break
@@ -272,6 +304,10 @@ class TxAudioReceiver:
             if pcm is None:
                 continue
             try:
+                if self._over_played == 0:
+                    logger.info("TX audio over started from %s", addr[0])
+                self._over_played += 1
+                self._over_peak = max(self._over_peak, _peak(pcm))
                 for chunk in self._prime(pcm):
                     proc.stdin.write(chunk)
                     proc.stdin.flush()
@@ -279,6 +315,23 @@ class TxAudioReceiver:
             except (BrokenPipeError, ValueError, OSError):
                 logger.error("pw-play exited; remote transmit audio stopped")
                 break
+
+    def _finish_over(self) -> None:
+        if self._over_played and time.monotonic() - self._last_pcm > OVER_GAP_SECONDS:
+            logger.info(
+                "TX audio over finished: played %d packets (%.1f s) into '%s', peak level %d/32767",
+                self._over_played, self._over_played * FRAME_SAMPLES / self._sample_rate,
+                self._sink, self._over_peak,
+            )
+            self._over_played = 0
+            self._over_peak = 0
+
+    def _warn(self, key: str, msg: str, *args) -> None:
+        """Warn at most once every 5 s per reason, so a stream can't flood the log."""
+        now = time.monotonic()
+        if now - self._last_warn.get(key, -1e9) >= 5.0:
+            self._last_warn[key] = now
+            logger.warning(msg, *args)
 
     def _prime(self, pcm: bytes, now: float | None = None) -> list[bytes]:
         """Chunks to write now: nothing while filling the prebuffer, then everything."""
@@ -300,6 +353,8 @@ class TxAudioReceiver:
         """Return the PCM to play for one datagram, or None to drop it."""
         if ip not in self._allowed_ips():
             self.dropped_foreign += 1
+            self._warn("foreign", "TX audio from %s dropped: not a connected 5trig client "
+                       "(connected: %s)", ip, sorted(self._allowed_ips()) or "none")
             return None
         payload = data[_SEQ.size:]
         if len(data) <= _SEQ.size or len(payload) % 2 or len(payload) > MAX_PAYLOAD:
@@ -314,5 +369,7 @@ class TxAudioReceiver:
         self._last_seq = seq
         if not self._gate.is_open():
             self.dropped_ungated += 1
+            self._warn("ungated", "TX audio from %s dropped: the radio is not keyed "
+                       "(no PTT request seen from the client)", ip)
             return None
         return payload
