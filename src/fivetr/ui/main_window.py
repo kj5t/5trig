@@ -669,7 +669,7 @@ class MainWindow(QMainWindow):
     async def _start_remote_server(self) -> None:
         rm_cfg = self._config.remote
         audio_port = rm_cfg.audio_udp_port if rm_cfg.audio_stream else None
-        self._remote_server = RemoteServer(
+        server = self._remote_server = RemoteServer(
             self._radio,
             host=rm_cfg.share_host,
             port=rm_cfg.server_port,
@@ -688,7 +688,9 @@ class MainWindow(QMainWindow):
             if audio_port is not None:
                 self._audio_scope.add_pcm_callback(self._remote_server.on_pcm)
         try:
-            await self._remote_server.start()
+            await server.start()
+            if self._remote_server is not server:
+                return      # disconnected while starting; _do_disconnect stopped it
             import socket
             local_ip = socket.gethostbyname(socket.gethostname())
             audio_info = f" + audio UDP:{audio_port}" if audio_port else ""
@@ -697,7 +699,7 @@ class MainWindow(QMainWindow):
             )
             logger.info("Remote server started on port %d", rm_cfg.server_port)
             if rm_cfg.tx_audio_sink:
-                err = self._remote_server.tx_audio_error
+                err = server.tx_audio_error
                 if err:
                     self._status_remote.setText(self._status_remote.text() + "  ⚠ no TX audio")
                     self.statusBar().showMessage(f"⚠ {err}", 30000)
@@ -1117,6 +1119,11 @@ class MainWindow(QMainWindow):
         )
 
     def closeEvent(self, event) -> None:
+        # Stop the audio scope now rather than in _do_disconnect: that runs after the
+        # window is gone, and pw-record would keep emitting into a destroyed signal.
+        if self._audio_scope:
+            self._audio_scope.stop()
+            self._audio_scope = None
         asyncio.ensure_future(self._do_disconnect())
         asyncio.ensure_future(self._stop_pota())
         save_config(self._config)
