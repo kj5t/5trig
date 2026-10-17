@@ -876,6 +876,14 @@ class MainWindow(QMainWindow):
             self._scope_data.emit(payload)
             if self._remote_server:
                 self._remote_server.on_scope_data(payload)
+        elif isinstance(self._radio, RemoteRadio):
+            # Client mode: the link to the shack can drop (WiFi switch, sleep) and
+            # RemoteRadio reopens it by itself.  Say so, so a dead link is never silent.
+            where = f"{self._config.remote.server_host}:{self._config.remote.server_port}"
+            if event == RadioEvent.DISCONNECTED and self._radio.reconnecting:
+                self._status_remote.setText(f"🛰 Remote: {where}  ⚠ link lost, reconnecting…")
+            elif event == RadioEvent.CONNECTED:
+                self._status_remote.setText(f"🛰 Remote: {where}")
 
     # ------------------------------------------------------------------
     # Qt Slots

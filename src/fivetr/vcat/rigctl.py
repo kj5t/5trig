@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 RPRT_OK = "RPRT 0\n"
 RPRT_EINVAL = "RPRT -1\n"
 RPRT_ENIMPL = "RPRT -11\n"
+RPRT_EIO = "RPRT -6\n"       # I/O error: the radio cannot be reached right now
 
 # 5trig Mode -> (Hamlib mode name, nominal passband Hz)
 _MODE_TO_HAMLIB: dict[Mode, tuple[str, int]] = {
@@ -182,6 +183,13 @@ class RigctlHandler:
 
     # ------------------------------------------------------------------
 
+    def _link_down(self, what: str) -> bool:
+        """True if a command cannot reach the radio (RemoteRadio while reconnecting)."""
+        if getattr(self._radio, "link_up", True):
+            return False
+        logger.warning("rigctl: link to the radio is down; refusing %s", what)
+        return True
+
     def _short(self, letter: str, args: str) -> str:
         s = self._radio.state
 
@@ -193,6 +201,8 @@ class RigctlHandler:
                 hz = int(float(args.split()[-1]))
             except (ValueError, IndexError):
                 return RPRT_EINVAL
+            if self._link_down(f"F {hz}"):
+                return RPRT_EIO
             self._radio.set_freq(hz, vfo=s.active_vfo)
             return RPRT_OK
 
@@ -206,6 +216,8 @@ class RigctlHandler:
             mode = _HAMLIB_TO_MODE.get(parts[-2].upper() if len(parts) > 1 else parts[0].upper())
             if mode is None:
                 return RPRT_EINVAL
+            if self._link_down(f"M {args}"):
+                return RPRT_EIO
             self._radio.set_mode(mode)
             return RPRT_OK
 
@@ -216,6 +228,8 @@ class RigctlHandler:
                 value = int(args.split()[-1])
             except (ValueError, IndexError):
                 return RPRT_EINVAL
+            if self._link_down(f"T {value}"):
+                return RPRT_EIO
             self._radio.set_ptt(value != 0)
             return RPRT_OK
 

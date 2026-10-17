@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from .audio import AudioUDPServer
-from .protocol import PROTOCOL_VERSION, encode_array, recv_msg, send_msg
+from .protocol import PROTOCOL_VERSION, configure_keepalive, encode_array, recv_msg, send_msg
 from .txaudio import TxAudioReceiver, TxGate
 
 if TYPE_CHECKING:
@@ -56,6 +56,14 @@ class RemoteServer:
         TCP bind address.  Default ``0.0.0.0:5040`` accepts connections on
         all interfaces; use ``127.0.0.1`` to restrict to loopback only.
     """
+
+    # A client that has sent a heartbeat ping must keep talking; silence for this long
+    # means its network is gone (WiFi switch, sleep) and the connection is dropped.
+    # Clients that never ping (older 5trig) are not timed out.
+    CLIENT_IDLE_TIMEOUT = 15.0
+    # A write that takes longer than this marks the client dead, so one stuck client
+    # cannot stall state updates to the others.
+    SEND_TIMEOUT = 2.0
 
     def __init__(
         self,
@@ -223,12 +231,14 @@ class RemoteServer:
         sock = writer.get_extra_info("socket")
         if sock is not None:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        configure_keepalive(sock)
 
         # Greet the client with radio model info and optional audio UDP port
         hello: dict = {
             "t": "hello",
             "model": self._radio.state.model,
             "ver": PROTOCOL_VERSION,
+            "heartbeat": True,      # we answer {"t":"ping"} with {"t":"pong"}
         }
         if self._audio_server:
             hello["audio_udp_port"] = self._audio_server.port
@@ -251,12 +261,23 @@ class RemoteServer:
             writer.close()
             return
 
+        heartbeat = False
         try:
             while True:
-                msg = await recv_msg(reader)
+                timeout = self.CLIENT_IDLE_TIMEOUT if heartbeat else None
+                msg = await asyncio.wait_for(recv_msg(reader), timeout)
+                if msg.get("t") == "ping":
+                    heartbeat = True
+                    await asyncio.wait_for(
+                        send_msg(writer, {"t": "pong", "n": msg.get("n")}), self.SEND_TIMEOUT
+                    )
+                    continue
                 await self._dispatch(msg)
         except (ConnectionResetError, asyncio.IncompleteReadError, EOFError):
             pass
+        except asyncio.TimeoutError:
+            logger.warning("Client %s went silent; dropping the connection", addr)
+            self._abort(writer)
         except Exception as exc:
             logger.warning("Client %s error: %s", addr, exc)
         finally:
@@ -382,10 +403,19 @@ class RemoteServer:
         dead: set[asyncio.StreamWriter] = set()
         for writer in list(self._clients):
             try:
-                await send_msg(writer, msg)
+                await asyncio.wait_for(send_msg(writer, msg), self.SEND_TIMEOUT)
             except Exception:
                 dead.add(writer)
+                self._abort(writer)     # ends that client's handler, which does the cleanup
         self._clients -= dead
+
+    @staticmethod
+    def _abort(writer: asyncio.StreamWriter) -> None:
+        """Drop a connection immediately, without waiting for a peer that may be gone."""
+        try:
+            writer.transport.abort()
+        except Exception:
+            pass
 
     @staticmethod
     def _state_to_dict(state) -> dict:
