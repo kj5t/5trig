@@ -551,6 +551,7 @@ class MainWindow(QMainWindow):
             if self._config.keyer.enabled:
                 await self._start_keyer()
             self._start_sidetone()
+            self._ensure_keyboard_cw_task()
             self._ptt_btn.setEnabled(True)
             self._ui_timer.start()
             self._connection_changed.emit(True)
@@ -601,7 +602,7 @@ class MainWindow(QMainWindow):
         self._start_sidetone()
 
         # Start keyboard CW sidetone consumer
-        self._keyboard_cw_task = asyncio.ensure_future(self._consume_keyboard_cw())
+        self._ensure_keyboard_cw_task()
 
         # Start keyer if enabled
         if self._config.keyer.enabled:
@@ -986,6 +987,7 @@ class MainWindow(QMainWindow):
             self._macro_task = None
         if self._keyboard_cw_task and not self._keyboard_cw_task.done():
             self._keyboard_cw_task.cancel()
+        self._keyboard_cw_task = None
         if isinstance(self._radio, RemoteRadio):
             self._radio.cw_stop()
         elif self._winkeyer and self._winkeyer.is_open:
@@ -998,6 +1000,8 @@ class MainWindow(QMainWindow):
         while not self._keyboard_cw_queue.empty():
             self._keyboard_cw_queue.get_nowait()
         self._keyboard_sideline_active = False
+        if self._radio:
+            self._ensure_keyboard_cw_task()      # Stop must not end the sidetone for later typing
 
     def _on_cw_char(self, ch: str) -> None:
         """Send a single character to the WinKeyer (local or remote)."""
@@ -1059,6 +1063,11 @@ class MainWindow(QMainWindow):
         if self._sidetone:
             self._sidetone.key(down)
         self._key_state.emit(down)
+
+    def _ensure_keyboard_cw_task(self) -> None:
+        """Run the keyboard-CW sidetone player (local and remote; restart after a Stop)."""
+        if self._keyboard_cw_task is None or self._keyboard_cw_task.done():
+            self._keyboard_cw_task = asyncio.ensure_future(self._consume_keyboard_cw())
 
     async def _consume_keyboard_cw(self) -> None:
         """Play sidetone for keyboard CW characters sequentially."""

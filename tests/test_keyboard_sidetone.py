@@ -93,3 +93,35 @@ class TestBusyIsNotKeyDown:
         await radio._handle_msg({"t": "cw_key_state", "down": True})
         await radio._handle_msg({"t": "cw_key_state", "down": False})
         assert got == [True, False]
+
+
+class TestConsumerLifecycle:
+    async def test_ensure_starts_once_and_restarts_after_cancel(self):
+        s = bind(stub())
+        s._keyboard_cw_task = None
+        s._consume_keyboard_cw = lambda: MainWindow._consume_keyboard_cw(s)
+        MainWindow._ensure_keyboard_cw_task(s)
+        first = s._keyboard_cw_task
+        MainWindow._ensure_keyboard_cw_task(s)
+        assert s._keyboard_cw_task is first              # not duplicated
+        first.cancel()
+        await asyncio.sleep(0)
+        MainWindow._ensure_keyboard_cw_task(s)
+        assert s._keyboard_cw_task is not first          # a Stop doesn't kill it for good
+        s._keyboard_cw_task.cancel()
+
+    async def test_typed_character_is_played_after_a_stop(self):
+        s = bind(stub(wpm=60))
+        s._radio = object()
+        s._keyboard_cw_task = None
+        s._consume_keyboard_cw = lambda: MainWindow._consume_keyboard_cw(s)
+        s._ensure_keyboard_cw_task = lambda: MainWindow._ensure_keyboard_cw_task(s)
+        s._macro_task = None
+        s._macro_widget = SimpleNamespace(set_active=lambda a: None)
+        s._winkeyer = None
+        MainWindow._ensure_keyboard_cw_task(s)
+        MainWindow._on_macro_stop(s)
+        s._keyboard_cw_queue.put_nowait("E")
+        await asyncio.sleep(0.3)
+        assert True in s._sidetone.log
+        s._keyboard_cw_task.cancel()
