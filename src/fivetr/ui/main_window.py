@@ -997,6 +997,7 @@ class MainWindow(QMainWindow):
         # Clear queued keyboard chars so they don't play after stop
         while not self._keyboard_cw_queue.empty():
             self._keyboard_cw_queue.get_nowait()
+        self._keyboard_sideline_active = False
 
     def _on_cw_char(self, ch: str) -> None:
         """Send a single character to the WinKeyer (local or remote)."""
@@ -1006,6 +1007,7 @@ class MainWindow(QMainWindow):
             self._winkeyer.send_text(ch)
 
         if self._config.keyer.sidetone or self._config.keyer.enabled:
+            self._keyboard_sideline_active = True
             self._keyboard_cw_queue.put_nowait(ch.upper())
 
     # ------------------------------------------------------------------
@@ -1049,8 +1051,14 @@ class MainWindow(QMainWindow):
     async def _schedule_cw_events(self, events: list[tuple[bool, float]]) -> None:
         """Play key events with timing. Cancelled on macro stop."""
         for down, duration_ms in events:
-            self._on_wk_key_event(down)
+            self._sim_key(down)
             await asyncio.sleep(duration_ms / 1000.0)
+
+    def _sim_key(self, down: bool) -> None:
+        """Drive sidetone and TX LED from the locally simulated element timing."""
+        if self._sidetone:
+            self._sidetone.key(down)
+        self._key_state.emit(down)
 
     async def _consume_keyboard_cw(self) -> None:
         """Play sidetone for keyboard CW characters sequentially."""
@@ -1058,8 +1066,8 @@ class MainWindow(QMainWindow):
         while True:
             ch = await self._keyboard_cw_queue.get()
             if ch not in _CW_ELEMENTS:
+                self._keyboard_sideline_active = not self._keyboard_cw_queue.empty()
                 continue
-            self._keyboard_sideline_active = True
             try:
                 events = _generate_cw_events(ch, self._config.keyer.wpm)
                 await self._schedule_cw_events(events)
@@ -1067,7 +1075,9 @@ class MainWindow(QMainWindow):
                 # leaves only 1 unit (element space). Add 2 more for 3-unit spacing.
                 await asyncio.sleep(2 * unit / 1000.0)
             finally:
-                self._keyboard_sideline_active = False
+                # Stay "active" while more characters are queued, so a late busy/key
+                # event from the shack can't key the sidetone in the gaps between them.
+                self._keyboard_sideline_active = not self._keyboard_cw_queue.empty()
 
     # ------------------------------------------------------------------
     # VFO / Mode / PTT

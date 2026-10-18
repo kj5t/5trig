@@ -399,7 +399,9 @@ class RemoteServer:
                 pass
         if not self._clients:
             return
-        msg = {"t": "cw_key_state", "down": busy}
+        # "busy" means the WinKeyer buffer is non-empty, not that the key is down;
+        # clients must not turn it into a sidetone.
+        msg = {"t": "cw_key_state", "down": busy, "busy": True}
         try:
             self._loop.call_soon_threadsafe(
                 lambda: asyncio.ensure_future(self._broadcast(msg))

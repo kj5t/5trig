@@ -385,6 +385,8 @@ class RemoteRadio:
             await self._emit(RadioEvent.SCOPE_DATA, db)
 
         elif t == "cw_key_state":
+            if msg.get("busy"):
+                return      # buffer busy/idle, not key up/down: would be a solid tone
             down = bool(msg["down"])
             logger.info("cw_key_state received: down=%s, callback=%s", down, self._key_callback is not None)
             if self._key_callback:
