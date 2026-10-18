@@ -92,14 +92,16 @@ class SidetoneGenerator:
     ) -> None:
         with self._lock:
             keyed = self._keyed
-        phase_inc = 2.0 * np.pi * self._freq / SAMPLE_RATE
         out = outdata[:, 0]
-        for i in range(frames):
-            if keyed:
-                self._envelope = min(1.0, self._envelope + self._ramp_step)
-            else:
-                self._envelope = max(0.0, self._envelope - self._ramp_step)
-            out[i] = np.sin(self._phase) * self._envelope * self._volume
-            self._phase += phase_inc
-        if self._phase > 2.0 * np.pi:
-            self._phase -= 2.0 * np.pi
+        if not keyed and self._envelope <= 0.0:
+            out[:] = 0.0          # idle: the stream runs all session, so don't do any maths
+            return
+        n = np.arange(1, frames + 1)
+        step = self._ramp_step * n
+        env = np.minimum(1.0, self._envelope + step) if keyed \
+            else np.maximum(0.0, self._envelope - step)
+        phase_inc = 2.0 * np.pi * self._freq / SAMPLE_RATE
+        phases = self._phase + phase_inc * (n - 1)
+        out[:] = np.sin(phases) * env * self._volume
+        self._envelope = float(env[-1])
+        self._phase = (self._phase + phase_inc * frames) % (2.0 * np.pi)
