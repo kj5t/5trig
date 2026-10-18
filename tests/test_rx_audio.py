@@ -100,3 +100,112 @@ def test_default_path_untouched_without_target():
     client = AudioUDPClient("127.0.0.1", 9)
     assert client._output_target == ""
     assert client._pw_proc is None
+
+
+class TestRouteSwitching:
+    """Move audio between the WSJT-X sink and the speakers without restarting."""
+
+    @pytest.fixture
+    def rig(self, monkeypatch):
+        import sys
+        import types
+
+        events = []
+
+        class FakeProc:
+            def __init__(self, cmd):
+                self.cmd = cmd
+                self.stdin = None
+                events.append(("pw_start", cmd[cmd.index("--target") + 1]))
+            def terminate(self): events.append(("pw_stop",))
+            def wait(self, timeout=None): pass
+            def kill(self): pass
+
+        class FakeStream:
+            def __init__(self, **kw): events.append(("sd_open",))
+            def start(self): pass
+            def stop(self): events.append(("sd_stop",))
+            def close(self): pass
+
+        fake_sd = types.SimpleNamespace(OutputStream=FakeStream)
+        monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+        _fake_pactl(monkeypatch, SINKS)
+        monkeypatch.setattr(audio.subprocess, "Popen", lambda cmd, **kw: FakeProc(cmd))
+
+        def make(route="sink", target="fivetr_rx"):
+            c = AudioUDPClient("127.0.0.1", 9, output_target=target, route=route)
+            c._running = True          # skip the network; exercise the outputs only
+            return c
+        return make, events
+
+    def test_sink_route_never_opens_the_speakers(self, rig):
+        make, events = rig
+        c = make("sink")
+        c._apply_route()
+        assert events == [("pw_start", "fivetr_rx")]
+        assert c._stream is None
+
+    def test_switching_to_speakers_and_back(self, rig):
+        make, events = rig
+        c = make("sink")
+        c._apply_route()
+        events.clear()
+        c.set_route("speakers")
+        assert events == [("sd_open",), ("pw_stop",)]          # new output up before old goes
+        assert c._pw_proc is None and c._stream is not None
+        events.clear()
+        c.set_route("sink")
+        assert events == [("pw_start", "fivetr_rx"), ("sd_stop",)]
+        assert c._stream is None and c._pw_proc is not None
+
+    def test_both_runs_both_and_leaves_running_outputs_alone(self, rig):
+        make, events = rig
+        c = make("sink")
+        c._apply_route()
+        events.clear()
+        c.set_route("both")
+        assert events == [("sd_open",)]                # the sink keeps playing, no gap
+        c.set_route("both")
+        assert events == [("sd_open",)]                # idempotent
+        assert c._pw_proc is not None and c._stream is not None
+
+    def test_without_a_configured_sink_everything_is_speakers(self, rig):
+        make, events = rig
+        c = make("sink", target="")
+        c._apply_route()
+        assert events == [("sd_open",)]
+        c.set_route("sink")
+        assert c._stream is not None and c._pw_proc is None
+
+    def test_missing_sink_stays_silent_rather_than_using_the_speakers(self, rig, monkeypatch):
+        make, events = rig
+        _fake_pactl(monkeypatch, "9\tsomething_else\tPipeWire\ts16le 2ch 48000Hz\tIDLE\n")
+        c = make("sink")
+        c._apply_route()
+        assert events == [] and c._stream is None
+        assert "fivetr_rx" in c.output_error
+
+    def test_speaker_failure_is_reported_not_raised(self, rig, monkeypatch):
+        import sys
+        make, events = rig
+
+        class Broken:
+            def __init__(self, **kw): raise OSError("no device")
+        sys.modules["sounddevice"].OutputStream = Broken
+        c = make("speakers")
+        c._apply_route()
+        assert c._stream is None
+        assert "no device" in c.output_error
+
+    def test_unknown_route_is_rejected(self, rig):
+        make, _ = rig
+        with pytest.raises(ValueError):
+            make().set_route("headphones")
+
+    def test_buffers_are_flushed_when_the_speakers_reopen(self, rig):
+        make, _ = rig
+        c = make("sink")
+        c._apply_route()
+        c._buf.append(np.ones(960, dtype=np.float32))
+        c.set_route("speakers")
+        assert len(c._buf) == 0

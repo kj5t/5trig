@@ -13,16 +13,18 @@ Default baud: 38400, 8N2.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 
 from .base import (
+    VFO,
     CATCommand,
     CATRadio,
     Meters,
     Mode,
     RadioEvent,
-    VFO,
 )
+from .filters import IF_SHIFT_MAX, IF_SHIFT_STEP
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +86,51 @@ class FTdx10(CATRadio):
         # Request one scope sweep per poll if waterfall is active
         cmds.append(self._build_request_scope())
         return cmds
+
+    def build_slow_poll_commands(self) -> list[CATCommand]:
+        # SH0 = width index, IS0 = IF shift, NA0 = narrow on/off (all MAIN receiver)
+        return [CATCommand(raw=raw, priority=8) for raw in (b"SH0;", b"IS0;", b"NA0;")]
+
+    # -----------------------------------------------------------------------
+    # Receive filter
+    # -----------------------------------------------------------------------
+
+    def build_set_filter_width(self, idx: int) -> bytes:
+        """SH0 0 pp ; — pp = 00..23, an index into the per-mode width table."""
+        return f"SH00{idx:02d};".encode()
+
+    def build_set_if_shift(self, hz: int) -> bytes:
+        """IS0 0 +/- hhhh ; — 0..1200 Hz in 20 Hz steps."""
+        hz = max(-IF_SHIFT_MAX, min(IF_SHIFT_MAX, hz))
+        hz = int(round(hz / IF_SHIFT_STEP)) * IF_SHIFT_STEP
+        return f"IS00{'-' if hz < 0 else '+'}{abs(hz):04d};".encode()
+
+    def build_set_narrow(self, on: bool) -> bytes:
+        return b"NA01;" if on else b"NA00;"
+
+    def set_filter_width(self, idx: int) -> None:
+        idx = max(0, min(23, int(idx)))
+        self.enqueue(CATCommand(raw=self.build_set_filter_width(idx), priority=3))
+        self.state.filter_width_idx = idx
+        self._state_changed()
+
+    def set_if_shift(self, hz: int) -> None:
+        raw = self.build_set_if_shift(hz)
+        self.enqueue(CATCommand(raw=raw, priority=3))
+        self.state.if_shift_hz = int(raw[5:9]) * (-1 if raw[4:5] == b"-" else 1)
+        self._state_changed()
+
+    def set_narrow(self, on: bool) -> None:
+        self.enqueue(CATCommand(raw=self.build_set_narrow(on), priority=3))
+        self.state.narrow = bool(on)
+        self._state_changed()
+
+    def _state_changed(self) -> None:
+        """Tell listeners now, so the UI doesn't wait for the next slow poll."""
+        with contextlib.suppress(RuntimeError):   # no running loop: unit tests, shutdown
+            asyncio.get_running_loop().create_task(
+                self._emit(RadioEvent.STATE_CHANGED, self.state.clone())
+            )
 
     # -----------------------------------------------------------------------
     # Band scope (FTdx-10 specific)
@@ -150,6 +197,20 @@ class FTdx10(CATRadio):
         except (ValueError, IndexError):
             logger.warning("Bad S-meter reply: %r", raw)
 
+    def _on_filter_reply(self, token: str) -> None:
+        """SH0pqq / IS0p+hhhh / NA0p — replies to the slow poll."""
+        try:
+            if token.startswith("SH"):
+                self.state.filter_width_idx = int(token[4:6])
+            elif token.startswith("IS"):
+                sign = -1 if token[4] == "-" else 1
+                self.state.if_shift_hz = sign * int(token[5:9])
+            elif token.startswith("NA"):
+                self.state.narrow = token[3] == "1"
+            asyncio.create_task(self._emit(RadioEvent.STATE_CHANGED, self.state.clone()))
+        except (ValueError, IndexError):
+            logger.warning("Bad filter reply: %r", token)
+
     def _on_scope_data(self, raw: bytes) -> None:
         """Parse BSM scope reply.
 
@@ -185,6 +246,8 @@ class FTdx10(CATRadio):
                 self._on_mode_reply(raw)
             elif token.startswith("SM"):
                 self._on_smeter_reply(raw)
+            elif token.startswith(("SH", "IS", "NA")):
+                self._on_filter_reply(token)
             elif token.startswith("BSM"):
                 self._on_scope_data(raw)
             else:

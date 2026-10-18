@@ -45,6 +45,12 @@ MAX_BUFFER_FRAMES = 15        # ~300 ms jitter buffer on the receiver
 
 _HDR = struct.Struct(">IH")   # seq (uint32) + payload_len (uint16)
 
+# Where the client plays the shack's audio.
+ROUTE_SINK = "sink"           # into the PipeWire sink (for WSJT-X); silent in the room
+ROUTE_SPEAKERS = "speakers"   # out of the default output (for CW / listening)
+ROUTE_BOTH = "both"
+ROUTES = (ROUTE_SINK, ROUTE_SPEAKERS, ROUTE_BOTH)
+
 
 def pipewire_sink_exists(name: str) -> bool:
     """True if PipeWire/PulseAudio knows a sink called *name*.
@@ -246,6 +252,11 @@ class AudioUDPClient:
         Name of a PipeWire sink to play into (via ``pw-play``).  Empty means
         the default output through sounddevice.  If the named sink does not
         exist nothing is played, rather than falling back to the speakers.
+    route:
+        Where audio goes when ``output_target`` is set: ``"sink"`` (default),
+        ``"speakers"`` or ``"both"``.  Change it while running with
+        :meth:`set_route`.  With no ``output_target`` audio always goes to the
+        speakers.
     """
 
     def __init__(
@@ -254,8 +265,11 @@ class AudioUDPClient:
         server_udp_port: int,
         sample_rate: int = 48000,
         output_target: str = "",
+        route: str = ROUTE_SINK,
     ) -> None:
         self._server = (server_host, server_udp_port)
+        self._route = route if route in ROUTES else ROUTE_SINK
+        self._out_lock = threading.RLock()
         self._sample_rate = sample_rate
         self._output_target = output_target
         self.output_error: str | None = None   # set when the RX sink could not be opened
@@ -286,12 +300,14 @@ class AudioUDPClient:
         except ValueError:
             pass
 
+    @property
+    def route(self) -> str:
+        return self._route
+
     def start(self) -> None:
         """Open the UDP socket, register with the server, and start playback."""
         try:
             import opuslib
-            if not self._output_target:
-                import sounddevice as sd
         except ImportError as exc:
             logger.error("Audio client deps missing: %s", exc)
             return
@@ -307,18 +323,69 @@ class AudioUDPClient:
         )
         self._recv_thread.start()
 
-        if self._output_target:
-            self._start_pipewire_output()
-        else:
-            self._stream = sd.OutputStream(
+        self._apply_route()
+        logger.info("Audio client started, streaming from %s (route: %s)",
+                    self._server, self._route)
+
+    def set_route(self, route: str) -> None:
+        """Change where the audio is played, without touching the network stream.
+
+        Safe to call from the UI thread while audio is flowing.  Failures to open
+        an output are reported in :attr:`output_error`, as at start-up.
+        """
+        if route not in ROUTES:
+            raise ValueError(f"unknown audio route {route!r}")
+        with self._out_lock:
+            self._route = route
+            if self._running:
+                self._apply_route()
+
+    def _wants_sink(self) -> bool:
+        return bool(self._output_target) and self._route in (ROUTE_SINK, ROUTE_BOTH)
+
+    def _wants_speakers(self) -> bool:
+        return not self._output_target or self._route in (ROUTE_SPEAKERS, ROUTE_BOTH)
+
+    def _apply_route(self) -> None:
+        """Open the outputs the current route needs, then close the others (no gap)."""
+        with self._out_lock:
+            self.output_error = None
+            if self._wants_sink() and self._pw_proc is None:
+                self._start_pipewire_output()
+            if self._wants_speakers() and self._stream is None:
+                self._start_speakers()
+            if not self._wants_sink():
+                self._stop_pipewire_output()
+            if not self._wants_speakers():
+                self._stop_speakers()
+
+    def _start_speakers(self) -> None:
+        try:
+            import sounddevice as sd
+            with self._buf_lock:
+                self._buf.clear()
+                self._partial = np.zeros(0, dtype=np.float32)
+            stream = sd.OutputStream(
                 samplerate=self._sample_rate,
                 channels=1,
                 dtype="float32",
                 blocksize=FRAME_SAMPLES,
                 callback=self._audio_callback,
             )
-            self._stream.start()
-        logger.info("Audio client started, streaming from %s", self._server)
+            stream.start()
+            self._stream = stream
+        except Exception as exc:        # missing dep, no device, PortAudio error
+            self.output_error = f"RX audio: could not open the speakers ({exc})"
+            logger.error("%s", self.output_error)
+
+    def _stop_speakers(self) -> None:
+        stream, self._stream = self._stream, None
+        if stream is not None:
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:
+                pass
 
     def stop(self) -> None:
         self._running = False
@@ -329,17 +396,12 @@ class AudioUDPClient:
             except Exception:
                 pass
             self._sock = None
-        if self._stream:
-            try:
-                self._stream.stop()
-                self._stream.close()
-            except Exception:
-                pass
-            self._stream = None
         if self._recv_thread:
             self._recv_thread.join(timeout=2)
             self._recv_thread = None
-        self._stop_pipewire_output()
+        with self._out_lock:
+            self._stop_speakers()
+            self._stop_pipewire_output()
         logger.info("Audio client stopped")
 
     # ------------------------------------------------------------------
@@ -347,7 +409,6 @@ class AudioUDPClient:
     # ------------------------------------------------------------------
 
     def _start_pipewire_output(self) -> None:
-        self.output_error = None
         if not pipewire_sink_exists(self._output_target):
             self.output_error = (
                 f"RX audio sink '{self._output_target}' not found - "
@@ -370,6 +431,9 @@ class AudioUDPClient:
             self.output_error = f"RX audio: could not start pw-play ({exc})"
             logger.error("Could not start pw-play: %s", exc)
             return
+        with contextlib.suppress(queue.Empty):
+            while True:
+                self._pw_queue.get_nowait()          # nothing stale from the last time
         self._pw_thread = threading.Thread(
             target=self._pw_writer, name="audio-pw-writer", daemon=True
         )
@@ -402,7 +466,7 @@ class AudioUDPClient:
     def _pw_writer(self) -> None:
         while self._running and self._pw_proc is not None:
             try:
-                data = self._pw_queue.get(timeout=0.5)
+                data = self._pw_queue.get(timeout=0.1)
             except queue.Empty:
                 continue
             proc = self._pw_proc
@@ -438,7 +502,7 @@ class AudioUDPClient:
                 )
                 if self._pw_proc is not None:
                     self._pw_enqueue(pcm)
-                else:
+                if self._stream is not None:
                     with self._buf_lock:
                         self._buf.append(pcm)
                 for cb in self._pcm_callbacks:

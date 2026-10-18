@@ -128,6 +128,10 @@ class RadioState:
     rf_gain: int = 100           # 0-100
     squelch: int = 0             # 0-100
     meter_values: dict[Meters, float] = field(default_factory=dict)
+    # Receive filter.  None = the radio (or its driver) doesn't report/support it.
+    filter_width_idx: int | None = None   # index into the radio's width table (0 = default)
+    if_shift_hz: int | None = None        # IF shift, -1200..+1200 Hz
+    narrow: bool | None = None            # NAR on/off
     connected: bool = False
     model: str = "Unknown"
 
@@ -266,6 +270,18 @@ class CATRadio:
         raw = self.build_set_ptt(tx)
         self.enqueue(CATCommand(raw=raw, reply_len=0, priority=1))
 
+    # Receive filter.  Radios that implement it override these; the defaults
+    # do nothing so the UI can offer the controls only when state reports them.
+
+    def set_filter_width(self, idx: int) -> None:
+        """Select an IF width by index into the radio's table for the current mode."""
+
+    def set_if_shift(self, hz: int) -> None:
+        """Set IF shift in Hz (negative = down)."""
+
+    def set_narrow(self, on: bool) -> None:
+        """Switch the NAR filter on or off."""
+
     def cw_key(self, down: bool) -> None:
         """Key down/up for CW via CAT TX command.
 
@@ -305,6 +321,10 @@ class CATRadio:
         """Return commands to issue each poll cycle (state refresh)."""
         raise NotImplementedError
 
+    def build_slow_poll_commands(self) -> list[CATCommand]:
+        """Commands for values that change rarely (filter settings); polled about once a second."""
+        return []
+
     # ------------------------------------------------------------------
     # Internal loops
     # ------------------------------------------------------------------
@@ -331,10 +351,17 @@ class CATRadio:
             elif cmd.reply_len == 0:
                 await asyncio.sleep(0.03)
 
+    SLOW_POLL_EVERY = 10   # fast cycles per slow cycle
+
     async def _poll_loop(self) -> None:
         """Periodically enqueue state-refresh commands."""
+        cycle = 0
         while self._running:
             self._enqueue_polls()
+            if cycle % self.SLOW_POLL_EVERY == 0:
+                for cmd in self.build_slow_poll_commands():
+                    self.enqueue(cmd)
+            cycle += 1
             await asyncio.sleep(self.POLL_INTERVAL)
 
     def _enqueue_polls(self) -> None:

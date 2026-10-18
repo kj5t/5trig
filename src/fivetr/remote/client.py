@@ -282,6 +282,15 @@ class RemoteRadio:
     def get_mode(self) -> None:
         pass
 
+    def set_filter_width(self, idx: int) -> None:
+        self._send_nowait({"t": "set_filter_width", "idx": int(idx)})
+
+    def set_if_shift(self, hz: int) -> None:
+        self._send_nowait({"t": "set_if_shift", "hz": int(hz)})
+
+    def set_narrow(self, on: bool) -> None:
+        self._send_nowait({"t": "set_narrow", "on": bool(on)})
+
     def set_ptt(self, tx: bool) -> None:
         self.ptt_requested = tx
         self._send_nowait({"t": "set_ptt", "on": tx})
@@ -361,6 +370,9 @@ class RemoteRadio:
             self.state.xit_on = s.get("xit_on", self.state.xit_on)
             self.state.ptt = s.get("ptt", self.state.ptt)
             self.state.model = s.get("model", self.state.model)
+            self.state.filter_width_idx = s.get("filter_width")
+            self.state.if_shift_hz = s.get("if_shift")
+            self.state.narrow = s.get("narrow")
             # Meters
             raw_meters = s.get("meters", {})
             for m in Meters:

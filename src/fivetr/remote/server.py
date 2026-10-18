@@ -310,6 +310,15 @@ class RemoteServer:
             from ..cat.base import Mode
             self._radio.set_mode(Mode.from_code(str(msg["code"])))
 
+        elif t == "set_filter_width":
+            self._radio.set_filter_width(int(msg["idx"]))
+
+        elif t == "set_if_shift":
+            self._radio.set_if_shift(int(msg["hz"]))
+
+        elif t == "set_narrow":
+            self._radio.set_narrow(bool(msg["on"]))
+
         elif t == "set_ptt":
             self._ptt_requested = bool(msg["on"])
             self._radio.set_ptt(self._ptt_requested)
@@ -433,4 +442,8 @@ class RemoteServer:
                 k.value: v for k, v in state.meter_values.items()
             },
             "model": state.model,
+            # Only radios that report a receive filter send these.
+            "filter_width": state.filter_width_idx,
+            "if_shift": state.if_shift_hz,
+            "narrow": state.narrow,
         }

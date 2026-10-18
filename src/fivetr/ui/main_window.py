@@ -15,6 +15,7 @@ from PySide6.QtCore import Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QAction, QColor, QPalette
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
     QDockWidget,
     QHBoxLayout,
     QLabel,
@@ -38,7 +39,7 @@ from ..keyer.sidetone import SidetoneGenerator
 from ..keyer.winkeyer import WinKeyer
 from ..pota.client import PotaClient
 from ..pota.spot import PotaSpot
-from ..remote.audio import AudioUDPClient
+from ..remote.audio import ROUTE_BOTH, ROUTE_SINK, ROUTE_SPEAKERS, AudioUDPClient
 from ..remote.client import RemoteRadio
 from ..remote.server import RemoteServer
 from ..remote.txaudio import TxAudioSender, TxGate
@@ -47,6 +48,7 @@ from ..vcat.server import VCATServer
 
 from .cluster_panel import ClusterPanel
 from .cw_keyboard import CWKeyboard
+from .filter_panel import FilterPanel
 from .freq_display import FreqDisplay
 from .keyer_widget import KeyerWidget
 from .macro_widget import MacroWidget
@@ -277,6 +279,20 @@ class MainWindow(QMainWindow):
             btn.clicked.connect(lambda _, f=hz: self._tune_to(f))
             tb.addWidget(btn)
 
+        tb.addSeparator()
+
+        # Where the shack's audio plays (remote client only): into the WSJT-X sink,
+        # out of the speakers (CW), or both.  Switchable without reconnecting.
+        tb.addWidget(QLabel(" 🔊 RX audio "))
+        self._audio_route = QComboBox()
+        for label, route in (("WSJT-X sink", ROUTE_SINK), ("Speakers", ROUTE_SPEAKERS),
+                             ("Both", ROUTE_BOTH)):
+            self._audio_route.addItem(label, route)
+        self._audio_route.setEnabled(False)
+        self._audio_route.setToolTip("Where to play the shack's receive audio")
+        self._audio_route.activated.connect(self._on_audio_route)
+        tb.addWidget(self._audio_route)
+
     def _build_central_widget(self) -> None:
         central = QWidget()
         self.setCentralWidget(central)
@@ -312,6 +328,13 @@ class MainWindow(QMainWindow):
         self._mode_panel = ModePanel()
         self._mode_panel.mode_selected.connect(self._on_mode_selected)
         v_layout.addWidget(self._mode_panel)
+
+        # Receive filter (hidden unless the radio reports it)
+        self._filter_panel = FilterPanel()
+        self._filter_panel.width_selected.connect(self._on_filter_width)
+        self._filter_panel.narrow_toggled.connect(self._on_filter_narrow)
+        self._filter_panel.shift_changed.connect(self._on_filter_shift)
+        v_layout.addWidget(self._filter_panel)
 
         # S-meter
         self._smeter = MeterWidget(Meters.SMETER)
@@ -512,8 +535,10 @@ class MainWindow(QMainWindow):
                     server_udp_port=self._radio.audio_udp_port,
                     sample_rate=self._config.waterfall.sample_rate,
                     output_target=self._config.remote.rx_audio_sink,
+                    route=self._config.remote.rx_audio_route,
                 )
                 self._audio_udp_client.start()
+                self._sync_audio_route_ui()
                 if self._audio_udp_client.output_error:
                     msg = self._audio_udp_client.output_error
                     self._status_remote.setText(f"🛰 Remote: {host}:{port}  ⚠ no RX audio")
@@ -608,6 +633,7 @@ class MainWindow(QMainWindow):
         if self._audio_udp_client:
             self._audio_udp_client.stop()
             self._audio_udp_client = None
+        self._audio_route.setEnabled(False)
 
         # Stop sidetone
         if self._sidetone:
@@ -894,6 +920,7 @@ class MainWindow(QMainWindow):
         self._vfo_a.set_freq(state.vfo_a_hz)
         self._vfo_b.set_freq(state.vfo_b_hz)
         self._mode_panel.set_mode(state.mode)
+        self._filter_panel.update_state(state)
         smeter = state.meter_values.get(Meters.SMETER, 0.0)
         self._smeter.set_value(smeter)
         self._log_panel.update_radio_state(state)
@@ -1057,6 +1084,46 @@ class MainWindow(QMainWindow):
     def _on_mode_selected(self, mode: Mode) -> None:
         if self._radio:
             self._radio.set_mode(mode)
+
+    def _sync_audio_route_ui(self) -> None:
+        """Show the client's current route; the choice only matters with a sink configured."""
+        client = self._audio_udp_client
+        has_sink = bool(self._config.remote.rx_audio_sink)
+        self._audio_route.setEnabled(client is not None and has_sink)
+        if not has_sink:
+            self._audio_route.setToolTip(
+                "Audio plays on the speakers.  Set an RX sink in Settings > Remote "
+                "to route it into WSJT-X instead.")
+        if client is not None:
+            i = self._audio_route.findData(client.route)
+            self._audio_route.blockSignals(True)
+            self._audio_route.setCurrentIndex(max(i, 0))
+            self._audio_route.blockSignals(False)
+
+    def _on_audio_route(self, _row: int) -> None:
+        client = self._audio_udp_client
+        if client is None:
+            return
+        route = self._audio_route.currentData()
+        client.set_route(route)
+        self._config.remote.rx_audio_route = route
+        save_config(self._config)
+        if client.output_error:
+            self.statusBar().showMessage(f"⚠ {client.output_error}", 30000)
+        else:
+            self.statusBar().showMessage(f"RX audio: {self._audio_route.currentText()}", 5000)
+
+    def _on_filter_width(self, idx: int) -> None:
+        if self._radio:
+            self._radio.set_filter_width(idx)
+
+    def _on_filter_narrow(self, on: bool) -> None:
+        if self._radio:
+            self._radio.set_narrow(on)
+
+    def _on_filter_shift(self, hz: int) -> None:
+        if self._radio:
+            self._radio.set_if_shift(hz)
 
     def _on_ptt_toggle(self, checked: bool) -> None:
         if self._radio:

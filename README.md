@@ -21,6 +21,8 @@ Primary target: Arch-based Linux (Manjaro, EndeavourOS, Arch). Also runs on macO
 
 - **Frequency control** — VFO A/B display & entry, click-to-tune, scroll wheel step, band quick-select
 - **Mode control** — LSB/USB/CW/CW-R/AM/FM/RTTY/DATA/C4FM buttons
+- **Receive filter** — IF width (per-mode table), NAR and IF shift, local or over the remote link (FTdx-10; the row is hidden for radios that don't report it)
+- **RX audio routing** — on a remote client, the toolbar switches the shack's audio between the WSJT-X sink, the speakers (CW) and both, without restarting
 - **Waterfall** — Real-time spectrum via CAT band scope (FTdx-10/101) or audio FFT (FT-710 / fallback)
 - **Virtual CAT server** — one TCP port (default `127.0.0.1:4535`) that speaks both the Hamlib **rigctld** protocol ("Hamlib NET rigctl" in WSJT-X, JS8Call, fldigi) and Kenwood TS-2000 → works with WSJT-X, JS8Call, fldigi, Log4OM
 - **Remote operation** — run WSJT-X on a laptop while the radio sits on another computer: CAT, receive audio and transmit audio travel through 5trig, no remote desktop needed (see [Remote operation](#remote-operation-wsjt-x-on-a-laptop-radio-in-the-shack))
